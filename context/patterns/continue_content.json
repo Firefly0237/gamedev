@@ -1,0 +1,15 @@
+{
+  "name": "continue_content",
+  "description": "在不破坏现有内容的前提下续写内容。",
+  "workflow": [
+    "读取现有内容和 ID 范围",
+    "保留原记录不变",
+    "按顺序追加新内容"
+  ],
+  "constraints": [
+    "禁止修改已有条目",
+    "新增 ID 必须递增",
+    "保持语气和风格一致"
+  ],
+  "output_expectation": "输出追加内容"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "modify_config",
+  "description": "对结构化配置进行确定性修改。",
+  "workflow": [
+    "读取目标配置文件",
+    "根据定位字段找到目标记录",
+    "校验 old_value",
+    "仅修改目标字段",
+    "输出可预览的变更结果"
+  ],
+  "constraints": [
+    "必须提供 file_path、locator_field、locator_value、target_field、new_value",
+    "如果给出 old_value，执行前必须校验",
+    "禁止一次修改多个记录"
+  ],
+  "output_expectation": "输出 ConfigEditInstruction JSON"
+}

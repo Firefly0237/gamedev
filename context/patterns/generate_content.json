@@ -1,0 +1,15 @@
+{
+  "name": "generate_content",
+  "description": "生成配置、关卡、剧情、Shader 等内容型资产。",
+  "workflow": [
+    "确认目标数据格式",
+    "遵循项目 Schema 生成记录",
+    "补充必要的说明或配套代码"
+  ],
+  "constraints": [
+    "字段必须与 Schema 对齐",
+    "缺少 Schema 时先明确假设",
+    "输出 JSON 需保持稳定结构"
+  ],
+  "output_expectation": "输出结构化内容和说明"
+}

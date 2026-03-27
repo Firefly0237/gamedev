@@ -1,0 +1,15 @@
+{
+  "name": "review_code",
+  "description": "对代码做风险导向的审查。",
+  "workflow": [
+    "先找高风险问题",
+    "再看行为回归和可维护性",
+    "最后补测试建议"
+  ],
+  "constraints": [
+    "发现应按严重级排序",
+    "尽量给出文件和行号",
+    "没有问题时要明确说明剩余风险"
+  ],
+  "output_expectation": "输出 ReviewFinding 列表"
+}

@@ -1,0 +1,15 @@
+{
+  "name": "translate_content",
+  "description": "对本地化内容进行翻译并保护占位符。",
+  "workflow": [
+    "识别源语言和目标语言",
+    "保护 {placeholder} 与格式标签",
+    "输出同结构翻译结果"
+  ],
+  "constraints": [
+    "占位符和换行符不得改变",
+    "禁止删除 key",
+    "尽量保持语气一致"
+  ],
+  "output_expectation": "输出翻译后的 JSON"
+}

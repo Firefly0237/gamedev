@@ -1,0 +1,16 @@
+{
+  "name": "modify_code",
+  "description": "对代码文本进行精确替换，不允许自由重写整文件。",
+  "workflow": [
+    "定位目标文件",
+    "生成 search_text 和 replace_text",
+    "必要时校验 old_value",
+    "输出替换指令"
+  ],
+  "constraints": [
+    "search_text 必须足够唯一",
+    "replace_text 只包含必要变更",
+    "禁止无差别覆盖整个文件"
+  ],
+  "output_expectation": "输出 CodeEditInstruction JSON"
+}
