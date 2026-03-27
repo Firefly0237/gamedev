@@ -1,135 +1,56 @@
 from __future__ import annotations
 
 import os
-from functools import lru_cache
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class ModelConfig(BaseModel):
-    provider: str = "mock"
-    base_url: str | None = None
-    api_key: str | None = None
-    router_model: str = "deepseek-chat"
-    generation_model: str = "deepseek-chat"
-    review_model: str = "deepseek-chat"
-    supervisor_model: str = "deepseek-reasoner"
+BASE_DIR = Path(__file__).resolve().parents[1]
+ENV_FILE = BASE_DIR / ".env"
+
+if ENV_FILE.exists():
+    load_dotenv(ENV_FILE)
 
 
-class MCPServerConfig(BaseModel):
-    name: str
-    command: str
-    args: list[str] = Field(default_factory=list)
-    enabled: bool = True
-    server_type: str = "generic"
+def _get_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-class AppSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+@dataclass(slots=True)
+class Settings:
+    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
+    deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    llm_router_model: str = os.getenv("LLM_ROUTER_MODEL", "deepseek-chat")
+    llm_generation_model: str = os.getenv("LLM_GENERATION_MODEL", "deepseek-chat")
+    llm_review_model: str = os.getenv("LLM_REVIEW_MODEL", "deepseek-chat")
+    llm_supervisor_model: str = os.getenv("LLM_SUPERVISOR_MODEL", "deepseek-chat")
+    dashscope_api_key: str = os.getenv("DASHSCOPE_API_KEY", "")
+    langchain_tracing_v2: bool = _get_bool("LANGCHAIN_TRACING_V2", False)
+    langchain_api_key: str = os.getenv("LANGCHAIN_API_KEY", "")
+    langchain_project: str = os.getenv("LANGCHAIN_PROJECT", "GameDev")
+    unity_project_path: str = os.getenv("UNITY_PROJECT_PATH", "")
+    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    base_dir: Path = BASE_DIR
+    logs_dir: Path = field(default_factory=lambda: BASE_DIR / "logs")
+    output_dir: Path = field(default_factory=lambda: BASE_DIR / "output")
+    db_path: Path = field(default_factory=lambda: BASE_DIR / "gamedev.db")
+    checkpoint_db_path: Path = field(default_factory=lambda: BASE_DIR / "checkpoint.db")
 
-    app_name: str = "GameDev"
-    debug: bool = True
-    default_project_root: str = ""
-    database_path: str = "database/gamedev.db"
-    checkpoint_db_path: str = "database/checkpoints.db"
-    log_level: str = "INFO"
-    langsmith_tracing: bool = False
-    langsmith_api_key: str = ""
-    langsmith_project: str = "gamedev"
-
-    llm_provider: str = "mock"
-    llm_base_url: str = ""
-    llm_api_key: str = ""
-    llm_router_model: str = "deepseek-chat"
-    llm_generation_model: str = "deepseek-chat"
-    llm_review_model: str = "deepseek-chat"
-    llm_supervisor_model: str = "deepseek-reasoner"
-
-    @property
-    def root_dir(self) -> Path:
-        return Path(__file__).resolve().parent.parent
-
-    @property
-    def database_file(self) -> Path:
-        return (self.root_dir / self.database_path).resolve()
-
-    @property
-    def checkpoint_file(self) -> Path:
-        return (self.root_dir / self.checkpoint_db_path).resolve()
-
-    @property
-    def logs_dir(self) -> Path:
-        return (self.root_dir / "logs").resolve()
-
-    @property
-    def output_dir(self) -> Path:
-        return (self.root_dir / "output").resolve()
-
-    @property
-    def patterns_dir(self) -> Path:
-        return (self.root_dir / "context" / "patterns").resolve()
-
-    @property
-    def project_schema_dir(self) -> Path:
-        return (self.root_dir / "context" / "project_schemas").resolve()
-
-    @property
-    def model(self) -> ModelConfig:
-        return ModelConfig(
-            provider=self.llm_provider,
-            base_url=self.llm_base_url or None,
-            api_key=self.llm_api_key or None,
-            router_model=self.llm_router_model,
-            generation_model=self.llm_generation_model,
-            review_model=self.llm_review_model,
-            supervisor_model=self.llm_supervisor_model,
-        )
-
-    @property
-    def engine_tool_aliases(self) -> dict[str, dict[str, str]]:
-        return {
-            "unity": {
-                "engine_compile": "unity_compile",
-                "engine_execute": "unity_execute",
-                "engine_scene": "unity_scene_hierarchy",
-                "engine_screenshot": "unity_screenshot",
-            },
-            "generic": {
-                "engine_compile": "engine_compile",
-                "engine_execute": "engine_execute",
-                "engine_scene": "engine_scene",
-                "engine_screenshot": "engine_screenshot",
-            },
-        }
-
-    @property
-    def mcp_servers(self) -> list[MCPServerConfig]:
-        return [
-            MCPServerConfig(name="filesystem", command="npx", args=["-y", "@modelcontextprotocol/server-filesystem"], server_type="fs"),
-            MCPServerConfig(name="git", command="npx", args=["-y", "@modelcontextprotocol/server-git"], server_type="git"),
-            MCPServerConfig(name="unity", command="unity-mcp", args=[], enabled=False, server_type="unity"),
-            MCPServerConfig(name="gamedev", command="python", args=["-m", "mcp_tools.mcp_server_gamedev"], server_type="gamedev"),
-        ]
+    def ensure_directories(self) -> None:
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> AppSettings:
-    load_dotenv(override=False)
-    settings = AppSettings()
-    for path in (settings.database_file, settings.checkpoint_file):
-        path.parent.mkdir(parents=True, exist_ok=True)
-    settings.logs_dir.mkdir(parents=True, exist_ok=True)
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
-    settings.project_schema_dir.mkdir(parents=True, exist_ok=True)
+def get_settings() -> Settings:
+    settings = Settings()
+    settings.ensure_directories()
     return settings
 
 
-def get_project_root() -> Path:
-    settings = get_settings()
-    configured = settings.default_project_root or os.getenv("DEFAULT_PROJECT_ROOT", "")
-    if configured:
-        return Path(configured).resolve()
-    return settings.root_dir
+settings = get_settings()

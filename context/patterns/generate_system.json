@@ -1,16 +1,28 @@
 {
-  "name": "generate_system",
-  "description": "实现一个新系统的标准流程。",
-  "workflow": [
-    "拆分数据、配置、逻辑、测试子任务",
-    "先定义数据结构和接口",
-    "再生成核心逻辑",
-    "最后补测试和文档"
+  "pattern_id": "generate_system",
+  "name": "实现游戏系统",
+  "description": "根据需求生成完整的游戏系统（数据类+配置+逻辑+测试）",
+  "applicable_when": "用户要求实现、创建、做一个新的游戏系统或功能",
+  "trigger_keywords": ["系统", "实现", "做一个", "加一个", "新功能", "新机制"],
+  "procedure": [
+    "分析需求，确定需要哪些数据结构",
+    "生成数据类（使用项目已有的命名空间和编码风格）",
+    "生成初始配置 JSON",
+    "生成核心逻辑脚本（引用数据类）",
+    "生成 NUnit 测试",
+    "所有文件遵循项目的目录结构和命名规范"
   ],
+  "file_placement": {
+    "data_class": "Assets/Scripts/Data/{Name}Data.cs",
+    "config": "Assets/Resources/Configs/{Name}Config.json",
+    "system": "Assets/Scripts/Systems/{Name}System.cs",
+    "test": "Assets/Tests/Editor/{Name}SystemTests.cs"
+  },
   "constraints": [
-    "保持模块边界清晰",
-    "优先增量创建新文件",
-    "不要删除现有文件"
+    "System 脚本默认不继承 MonoBehaviour（纯逻辑类）",
+    "配置加载使用项目已有的模式",
+    "所有公共方法加 XML 文档注释",
+    "[Serializable] 标记数据类"
   ],
-  "output_expectation": "输出阶段化计划和候选产物"
+  "output_format": "CodeGenOutput"
 }

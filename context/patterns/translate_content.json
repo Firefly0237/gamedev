@@ -1,15 +1,20 @@
 {
-  "name": "translate_content",
-  "description": "对本地化内容进行翻译并保护占位符。",
-  "workflow": [
-    "识别源语言和目标语言",
-    "保护 {placeholder} 与格式标签",
-    "输出同结构翻译结果"
+  "pattern_id": "translate_content",
+  "name": "本地化翻译",
+  "description": "翻译语言表，保护占位符",
+  "applicable_when": "用户要求翻译、本地化",
+  "trigger_keywords": ["翻译", "本地化", "多语言", "localization"],
+  "procedure": [
+    "读取源语言文件",
+    "保护所有花括号占位符（{0}、{player_name} 等）",
+    "翻译 value，保持 key 不变",
+    "还原占位符",
+    "写入目标语言文件"
   ],
   "constraints": [
-    "占位符和换行符不得改变",
-    "禁止删除 key",
-    "尽量保持语气一致"
+    "花括号占位符绝对不翻译",
+    "游戏术语符合目标语言习惯（英文 HP/ATK/DEF，日文 HP/攻撃力/防御力）",
+    "UI 文本简洁，注意字符宽度差异"
   ],
-  "output_expectation": "输出翻译后的 JSON"
+  "output_format": "LocalizationOutput"
 }

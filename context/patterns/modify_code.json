@@ -1,16 +1,18 @@
 {
-  "name": "modify_code",
-  "description": "对代码文本进行精确替换，不允许自由重写整文件。",
-  "workflow": [
-    "定位目标文件",
-    "生成 search_text 和 replace_text",
-    "必要时校验 old_value",
-    "输出替换指令"
+  "pattern_id": "modify_code",
+  "name": "修改代码",
+  "description": "精确修改代码文件中的指定内容",
+  "applicable_when": "用户要求修改代码中的具体值、变量、参数",
+  "trigger_keywords": ["改代码", "修改方法", "改变量", "改参数"],
+  "procedure": [
+    "确定目标代码文件",
+    "确定要搜索的原始文本（search_pattern）",
+    "确定替换后的文本（replace_with）",
+    "输出 CodeModifyPlan JSON"
   ],
   "constraints": [
-    "search_text 必须足够唯一",
-    "replace_text 只包含必要变更",
-    "禁止无差别覆盖整个文件"
+    "search_pattern 必须在文件中唯一匹配",
+    "不修改无关代码"
   ],
-  "output_expectation": "输出 CodeEditInstruction JSON"
+  "output_format": "CodeModifyPlan"
 }
