@@ -91,25 +91,8 @@ npm install -g @modelcontextprotocol/server-filesystem @modelcontextprotocol/ser
 cp .env.example .env
 # 编辑 .env，填入 DEEPSEEK_API_KEY
 
-# 验证
-python test_env.py
-
 # 启动
 streamlit run app.py
-```
-
-## 测试
-
-使用 Unity 官方开源项目 [Chop Chop](https://github.com/UnityTechnologies/open-project-1) 测试：
-
-```bash
-git clone https://github.com/UnityTechnologies/open-project-1.git ~/ChopChop
-```
-
-或使用内置脚本创建模拟项目（不需要 Unity）：
-
-```bash
-python create_test_project.py
 ```
 
 ## Docker
