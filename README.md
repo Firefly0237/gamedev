@@ -1,8 +1,8 @@
 # 🎮 GameDev
 
-**引擎无关的多 Agent 游戏研发平台**
+**游戏开发者的 AI 工作台**
 
-基于 LangGraph + MCP 协议，通过多 Agent Supervisor 编排实现从策划配置到代码实现到质量检查的全流程自动化。
+在已有游戏项目中，通过自然语言驱动的多 Agent 系统（LangGraph + MCP）自动化日常研发任务——配置修改、代码审查、测试生成、内容管理、质量检查。系统通过 Scanner 分析项目代码结构，通过 Project Schema 理解数据格式，项目代码越多，系统理解越深，输出越准确。
 
 ---
 
@@ -91,8 +91,25 @@ npm install -g @modelcontextprotocol/server-filesystem @modelcontextprotocol/ser
 cp .env.example .env
 # 编辑 .env，填入 DEEPSEEK_API_KEY
 
+# 验证
+python test_env.py
+
 # 启动
 streamlit run app.py
+```
+
+## 测试
+
+使用 Unity 官方开源项目 [Chop Chop](https://github.com/UnityTechnologies/open-project-1) 测试：
+
+```bash
+git clone https://github.com/UnityTechnologies/open-project-1.git ~/ChopChop
+```
+
+或使用内置脚本创建模拟项目（不需要 Unity）：
+
+```bash
+python create_test_project.py
 ```
 
 ## Docker
