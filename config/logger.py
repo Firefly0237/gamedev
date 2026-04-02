@@ -1,51 +1,49 @@
 from __future__ import annotations
 
 import logging
-from logging.handlers import RotatingFileHandler
+import sys
+from datetime import datetime
 from pathlib import Path
 
-from config.settings import settings
+from config.settings import Settings
 
 
-_CONFIGURED = False
+def _setup_logger(name: str = "GameDev") -> logging.Logger:
+    logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger
 
+    Settings.ensure_dirs()
 
-def configure_logging(level: str | None = None) -> None:
-    global _CONFIGURED
-    if _CONFIGURED:
-        return
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
 
-    settings.ensure_directories()
-    log_level = getattr(logging, (level or settings.log_level).upper(), logging.INFO)
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
-    root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
+    console_level = getattr(logging, Settings.LOG_LEVEL.upper(), logging.INFO)
 
-    console_exists = any(
-        isinstance(handler, logging.StreamHandler) and not isinstance(handler, RotatingFileHandler)
-        for handler in root_logger.handlers
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s │ %(levelname)-7s │ %(message)s",
+            datefmt="%H:%M:%S",
+        )
     )
-    if not console_exists:
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(log_level)
-        console_handler.setFormatter(formatter)
-        root_logger.addHandler(console_handler)
 
-    log_file = settings.logs_dir / "gamedev.log"
-    file_exists = any(
-        isinstance(handler, RotatingFileHandler)
-        and Path(getattr(handler, "baseFilename", "")) == log_file
-        for handler in root_logger.handlers
+    log_date = datetime.now().strftime("%Y-%m-%d")
+    log_file = Path(Settings.LOG_DIR) / f"gamedev_{log_date}.log"
+    file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s │ %(levelname)-7s │ %(name)s.%(funcName)s:%(lineno)d │ %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     )
-    if not file_exists:
-        file_handler = RotatingFileHandler(log_file, maxBytes=1_048_576, backupCount=3, encoding="utf-8")
-        file_handler.setLevel(log_level)
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
 
-    _CONFIGURED = True
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    logger.info("日志系统启动 | 级别=%s | 文件=%s", logging.getLevelName(console_level), log_file)
+    return logger
 
 
-def get_logger(name: str = "GameDev") -> logging.Logger:
-    configure_logging()
-    return logging.getLogger(name)
+logger = _setup_logger()

@@ -1,2 +1,3 @@
-# prompts/art_gen.py
-# TODO: 美术生成提示词模板 — 在模块五中实现
+SYSTEM_PROMPT = """你是游戏美术指导。根据描述和操作指南构建图像生成 prompt 或美术需求文档。
+
+输出纯 JSON，格式为 ArtGenOutput。"""
