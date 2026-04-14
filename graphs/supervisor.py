@@ -1,4 +1,3 @@
-import json
 import os
 import re
 import time
@@ -11,9 +10,10 @@ from config.settings import Settings
 from context.loader import build_system_prompt
 from database.db import db
 from graphs.agent_loop import _build_tool_definitions, run_agent_loop
-from graphs.safety import execute_tool_safely, normalize_path, validate_csharp_basic
-from mcp_tools.mcp_client import call_mcp_tool, get_project_path, is_mcp_connected
-from schemas.contracts import empty_result, empty_verification
+from graphs.safety import execute_tool_safely, normalize_path
+from graphs.verify import verify_files
+from mcp_tools.mcp_client import get_project_path
+from schemas.contracts import empty_result
 from schemas.outputs import SubTaskPlan, try_parse
 
 
@@ -318,72 +318,13 @@ def run_execute(plan, project_context: dict, skill: dict | None = None) -> dict:
 
 
 def run_verify(created_files: list[str], project_context: dict) -> dict:
-    """VERIFY 阶段：语法检查 + 编译验证"""
-    verification = empty_verification()
-    verification["performed"] = True
-    details = verification["details"]
-    project_path = get_project_path() or (project_context or {}).get("project_path", "")
-
-    syntax_passed = True
-    for rel_path in created_files:
-        if not rel_path.endswith(".cs"):
-            continue
-
-        full_path = normalize_path(rel_path, project_path)
-        try:
-            content = call_mcp_tool("read_file", {"path": full_path})
-            errors = validate_csharp_basic(content)
-            if errors:
-                syntax_passed = False
-                details.append(
-                    {
-                        "type": "syntax",
-                        "passed": False,
-                        "message": f"{rel_path}: {'; '.join(errors[:3])}",
-                    }
-                )
-            else:
-                details.append({"type": "syntax", "passed": True, "message": f"{rel_path}: 语法 OK"})
-        except Exception as exc:
-            syntax_passed = False
-            details.append({"type": "syntax", "passed": False, "message": f"{rel_path}: 读取失败 {exc}"})
-
-    compile_passed = True
-    if Settings.is_unity_available() and is_mcp_connected("unity"):
-        logger.info("VERIFY 阶段：调用 engine_compile")
-        try:
-            compile_result = call_mcp_tool("engine_compile", {})
-            compile_data = json.loads(compile_result) if isinstance(compile_result, str) else compile_result
-            if compile_data.get("success"):
-                details.append(
-                    {
-                        "type": "compile",
-                        "passed": True,
-                        "message": f"Unity 编译通过 ({compile_data.get('duration', 0):.1f}s)",
-                    }
-                )
-            else:
-                compile_passed = False
-                errors = compile_data.get("errors", [])
-                error_summary = "; ".join(
-                    f"{item.get('file', '?')}:{item.get('line', '?')} {item.get('message', '')[:80]}"
-                    for item in errors[:3]
-                )
-                details.append(
-                    {
-                        "type": "compile",
-                        "passed": False,
-                        "message": f"Unity 编译失败: {error_summary or '未知错误'}",
-                    }
-                )
-        except Exception as exc:
-            compile_passed = False
-            details.append({"type": "compile", "passed": False, "message": f"Unity 编译调用失败: {exc}"})
-    else:
-        details.append({"type": "compile", "passed": True, "message": "Unity 未配置，跳过真编译验证"})
-
-    verification["passed"] = syntax_passed and compile_passed
-    return verification
+    """VERIFY 阶段：调用通用验证器。"""
+    return verify_files(
+        files=created_files,
+        project_context=project_context,
+        mode="full",
+        skill_id="generate_system",
+    )
 
 
 def run_fix_loop(
