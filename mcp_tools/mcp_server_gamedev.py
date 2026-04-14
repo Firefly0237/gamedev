@@ -82,6 +82,14 @@ def _build_tools() -> list[Tool]:
                 "required": ["settings_file"],
             },
         ),
+        Tool(
+            name="validate_all_configs",
+            description="校验项目所有配置文件的字段类型、ID 重复、数值范围等常见问题",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ]
 
 
@@ -190,6 +198,31 @@ def _read_project_settings(arguments: dict) -> list[TextContent]:
     return _text_result(content[:5000])
 
 
+def _validate_all_configs(arguments: dict) -> list[TextContent]:
+    _ = arguments
+    project_root = ROOT
+    if project_root is None:
+        return _text_result("项目根目录未初始化")
+
+    project_dir = Path(__file__).resolve().parents[1]
+    if str(project_dir) not in sys.path:
+        sys.path.insert(0, str(project_dir))
+
+    from graphs.validators import validate_all_configs
+
+    schemas = []
+    schema_dir = project_dir / "context" / "project_schemas"
+    if schema_dir.exists():
+        for file_path in schema_dir.glob("*.json"):
+            try:
+                schemas.append(json.loads(file_path.read_text(encoding="utf-8")))
+            except Exception:
+                continue
+
+    result = validate_all_configs(str(project_root), schemas)
+    return _text_result(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 @server.list_tools()
 async def list_tools():
     return _build_tools()
@@ -207,6 +240,8 @@ async def call_tool(name: str, arguments: dict):
         return _scan_texture_info(arguments)
     if name == "read_project_settings":
         return _read_project_settings(arguments)
+    if name == "validate_all_configs":
+        return _validate_all_configs(arguments)
     return _text_result(f"未知工具: {name}")
 
 

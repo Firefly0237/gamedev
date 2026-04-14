@@ -13,7 +13,8 @@ KEYWORD_MAP = {
     "review_code": ["审查", "检查", "review", "代码质量"],
     "modify_config": ["改", "修改", "调整", "设置为", "改成"],
     "modify_code": ["改代码", "修改方法", "重构", "改变量"],
-    "generate_test": ["测试", "test", "生成测试", "写测试"],
+    "generate_test": ["生成测试", "写测试", "补测试", "单元测试代码"],
+    "validate_build": ["编译", "构建", "compile", "运行测试", "跑测试", "测试结果", "editor.log", "unity 日志"],
     "generate_system": ["实现", "做一个", "创建系统", "新功能", "新模块", "加一个"],
     "generate_shader": ["shader", "着色器", "视觉效果", "材质"],
     "generate_ui": ["ui", "面板", "界面", "hud", "菜单"],
@@ -75,6 +76,27 @@ def load_all_skills() -> list[dict]:
 def match_skill(user_input: str, detected_genre: str = "unknown") -> dict | None:
     skills = load_all_skills()
     user_lower = user_input.lower()
+
+    build_intents = [
+        "编译",
+        "构建",
+        "compile",
+        "运行测试",
+        "跑测试",
+        "测试结果",
+        "editor.log",
+        "unity 日志",
+        "unity日志",
+    ]
+    generate_test_intents = ["生成测试", "写测试", "补测试", "单元测试代码"]
+
+    if any(word in user_lower for word in build_intents) and not any(
+        word in user_lower for word in generate_test_intents
+    ):
+        skill = load_skill("validate_build")
+        if skill:
+            logger.info("Skill 匹配: validate_build (explicit build/test intent)")
+            return skill
 
     if any(word in user_lower for word in ["审查", "review", "检查代码", "代码质量"]):
         skill = load_skill("review_code")
@@ -174,7 +196,12 @@ def match_schema(user_input: str) -> dict | None:
     return None
 
 
-def build_system_prompt(skill: dict = None, schema: dict = None, project_context: dict = None) -> str:
+def build_system_prompt(
+    skill: dict = None,
+    schema: dict = None,
+    project_context: dict = None,
+    focus_class: str = None,
+) -> str:
     parts: list[str] = []
 
     if project_context:
@@ -193,8 +220,44 @@ def build_system_prompt(skill: dict = None, schema: dict = None, project_context
 
         scripts = project_context.get("scripts", [])
         if scripts:
+            display_scripts = scripts
+
+            if focus_class:
+                from scanner.reference_graph import get_related_scripts
+
+                ref_graph = project_context.get("reference_graph", {})
+                reverse_graph = project_context.get("reverse_graph", {})
+                class_to_path = project_context.get("class_to_path", {})
+                related = get_related_scripts(
+                    focus_class,
+                    scripts,
+                    ref_graph,
+                    reverse_graph,
+                    class_to_path,
+                    depth=1,
+                )
+
+                focus_script = next((script for script in scripts if script.get("class_name") == focus_class), None)
+                ordered: list[dict] = []
+                if focus_script:
+                    ordered.append(focus_script)
+                ordered.extend(related)
+
+                seen_paths = {script.get("path") for script in ordered}
+                for script in scripts:
+                    path = script.get("path")
+                    if path in seen_paths or len(ordered) >= 30:
+                        continue
+                    ordered.append(script)
+                    seen_paths.add(path)
+
+                display_scripts = ordered[:30]
+
             lines = ["## 项目脚本"]
-            for script in scripts[:30]:
+            if focus_class and any(script.get("class_name") == focus_class for script in display_scripts[:5]):
+                lines.append(f"（按相关性排序，首条为焦点 {focus_class}）")
+
+            for script in display_scripts[:30]:
                 base = f":{script['base_class']}" if script.get("base_class") else ""
                 namespace = f" ({script['namespace']})" if script.get("namespace") else ""
                 lines.append(f"- {script['class_name']}{base}{namespace} — {script['path']}")
@@ -222,6 +285,14 @@ def build_system_prompt(skill: dict = None, schema: dict = None, project_context
         parts.append(schema_text)
 
     return "\n\n".join(parts)
+
+
+def extract_focus_class(user_input: str, project_context: dict) -> str | None:
+    class_to_path = project_context.get("class_to_path", {})
+    for class_name in class_to_path.keys():
+        if class_name in user_input:
+            return class_name
+    return None
 
 
 def list_skills(genre: str = "common") -> list[str]:

@@ -23,6 +23,33 @@
 - 逻辑: Assets/Scripts/Systems/{Name}System.cs
 - 测试: Assets/Tests/Editor/{Name}SystemTests.cs
 
+## Supervisor 模式
+
+如果你被调用在 Supervisor 的 PLAN 阶段，输出格式不再是自由文本，
+而是严格的 SubTaskPlan JSON。系统会自动检测调用阶段并切换格式。
+
+PLAN 阶段时：
+- 不要直接生成代码
+- 不要调用 write_file
+- 仅调用 read_file/list_directory 了解项目结构后输出 JSON
+
+EXECUTE 阶段时：
+- 每次只完成一个 subtask
+- subtask 的 description 已经具体到字段名/方法名
+- 严格按 description 生成代码并 write_file
+- 不要做 description 之外的事情（如修改其他文件）
+
+## Supervisor 友好的拆解原则
+
+如果你拆解任务，遵循这个顺序：
+1. 数据类（XxxData.cs）
+2. 配置文件（XxxConfig.json）
+3. 逻辑系统（XxxSystem.cs）
+4. 单元测试（XxxSystemTests.cs）
+5. （可选）Editor 工具（XxxEditor.cs）
+
+每个文件作为独立的 subtask，依赖关系：System 依赖 Data，Tests 依赖 System。
+
 ## 红线
 
 - 不能跳过第 1 步直接写代码

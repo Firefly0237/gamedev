@@ -33,6 +33,9 @@ class Settings:
     SKILLS_DIR: str = "context/skills"
     SCHEMAS_DIR: str = "context/project_schemas"
 
+    UNITY_EXECUTABLE_PATH: str = os.getenv("UNITY_EXECUTABLE_PATH", "")
+    UNITY_BUILD_TIMEOUT: int = int(os.getenv("UNITY_BUILD_TIMEOUT", "300"))
+
     LANGCHAIN_TRACING: bool = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
 
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
@@ -40,3 +43,9 @@ class Settings:
     @classmethod
     def get_model(cls, task_type: str) -> str:
         return cls.MODEL_MAP.get(task_type, cls.DEEPSEEK_MODEL)
+
+    @classmethod
+    def is_unity_available(cls) -> bool:
+        if not cls.UNITY_EXECUTABLE_PATH:
+            return False
+        return os.path.isfile(cls.UNITY_EXECUTABLE_PATH)

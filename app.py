@@ -93,9 +93,23 @@ def render_chat() -> None:
                 if result["status"] in ("success", "partial"):
                     response = result.get("display", "完成")
                     st.markdown(response)
-                    col1, col2 = st.columns(2)
+                    output_files = result.get("output_files", [])
+                    if output_files:
+                        preview = ", ".join(output_files[:3])
+                        suffix = "..." if len(output_files) > 3 else ""
+                        st.caption(f"📁 输出文件: {preview}{suffix}")
+
+                    verification = result.get("verification") or {}
+                    if verification.get("performed"):
+                        if verification.get("passed"):
+                            st.caption("✅ 已执行验证")
+                        else:
+                            st.caption("⚠️ 已执行验证，但存在未通过项")
+
+                    col1, col2, col3 = st.columns(3)
                     col1.caption(f"⏱ {result.get('duration', 0):.1f}s")
                     col2.caption(f"🔤 {result.get('tokens', 0):,} token")
+                    col3.caption(f"🛣 {result.get('route', 'unknown')}")
                 else:
                     response = f"❌ {result.get('error', '执行失败')}"
                     st.error(response)
@@ -109,6 +123,7 @@ def main() -> None:
 
     with st.sidebar:
         st.title("🎮 GameDev")
+        from config.settings import Settings
 
         with st.expander("⚙️ API 设置", expanded=False):
             st.text_input("DeepSeek API Key", type="password", key="api_key")
@@ -165,6 +180,22 @@ def main() -> None:
             col1.metric("脚本数", st.session_state.project_context.get("total_scripts", 0))
             col2.metric("场景数", len(st.session_state.project_context.get("scenes", [])))
             st.caption(f"🎮 {st.session_state.detected_genre}")
+
+            ctx_dict = st.session_state.get("project_context", {})
+            coverage = ctx_dict.get("test_coverage_ratio", 0)
+            covered_count = len(ctx_dict.get("covered_classes", []))
+            uncovered_count = len(ctx_dict.get("uncovered_scripts", []))
+            total_coverable = covered_count + uncovered_count
+            if total_coverable > 0:
+                if coverage >= 0.7:
+                    st.caption(f"📊 测试覆盖: {coverage:.0%} ({covered_count}/{total_coverable}) ✅")
+                elif coverage >= 0.3:
+                    st.caption(f"📊 测试覆盖: {coverage:.0%} ({covered_count}/{total_coverable}) ⚠️")
+                else:
+                    st.caption(f"📊 测试覆盖: {coverage:.0%} ({covered_count}/{total_coverable}) 🔴")
+            else:
+                st.caption("📊 测试覆盖: 暂无可测试脚本")
+
             from mcp_tools.mcp_client import get_mcp_status
 
             try:
@@ -176,6 +207,26 @@ def main() -> None:
                     st.caption("MCP: 🔴")
             except Exception:
                 st.caption("MCP: 🔴")
+
+            if not Settings.is_unity_available():
+                st.caption("⚠️ Unity 未配置：编译/测试验证已降级为语法检查")
+                with st.expander("如何配置 Unity"):
+                    st.markdown(
+                        """
+1. 安装 Unity（任意版本）
+2. 在 .env 中设置 UNITY_EXECUTABLE_PATH，例如：
+
+```env
+# Windows
+UNITY_EXECUTABLE_PATH=C:/Program Files/Unity/Hub/Editor/2022.3.10f1/Editor/Unity.exe
+
+# macOS
+UNITY_EXECUTABLE_PATH=/Applications/Unity/Hub/Editor/2022.3.10f1/Unity.app/Contents/MacOS/Unity
+```
+
+3. 重启 GameDev
+                        """
+                    )
             st.divider()
 
             st.subheader("📌 推荐操作")

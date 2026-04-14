@@ -10,6 +10,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from config.logger import logger
+from config.settings import Settings
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +69,8 @@ ENGINE_TOOL_MAP = {
         "engine_execute": "unity_execute",
         "engine_scene": "unity_scene_hierarchy",
         "engine_compile": "unity_compile",
+        "engine_run_tests": "unity_run_tests",
+        "engine_get_logs": "unity_get_logs",
         "engine_screenshot": "unity_screenshot",
     },
 }
@@ -136,6 +139,22 @@ class MCPClientManager:
         except Exception as exc:
             logger.error(f"[gamedev] 连接失败: {exc}")
             raise
+
+        if Settings.is_unity_available():
+            try:
+                unity_conn = _MCPConnection(
+                    "unity",
+                    sys.executable,
+                    ["-m", "mcp_tools.mcp_server_unity", project_path],
+                    cwd=str(APP_ROOT),
+                )
+                unity_conn.connect_sync()
+                self._connections["unity"] = unity_conn
+                logger.info("Unity Server 已连接")
+            except Exception as exc:
+                logger.warning(f"Unity Server 连接失败: {exc}")
+        else:
+            logger.info("Unity 未配置，跳过 Unity Server")
 
         self._tool_registry = {}
         for name, conn in self._connections.items():

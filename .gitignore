@@ -16,3 +16,5 @@ test_project/
 context/project_schemas/*.json
 create_test_project.py
 test_env.py
+create_demo_projects.py
+demo_projects/

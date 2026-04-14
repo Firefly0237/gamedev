@@ -1,10 +1,13 @@
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 from config.logger import logger
 from scanner.base import BaseScanner, ProjectContext
+from scanner.coverage import analyze_coverage
+from scanner.reference_graph import build_reference_graph, extract_references
 
 
 SKIP_DIRS = {"Library", "Temp", "Packages", "obj", ".git"}
@@ -26,6 +29,7 @@ class UnityScanner(BaseScanner):
         self._config_list: list[str] = []
         self._shader_list: list[str] = []
         self._localization_list: list[str] = []
+        self._scripts_with_refs: list[dict] = []
 
     def validate_project(self) -> tuple[bool, str]:
         if not (self.project_root / "ProjectSettings").exists():
@@ -36,8 +40,49 @@ class UnityScanner(BaseScanner):
             return False, "缺少 ProjectSettings/ProjectVersion.txt"
         return True, ""
 
+    def _cache_path(self) -> Path:
+        return self.project_root / ".gamedev_cache.json"
+
+    def _load_cache(self) -> dict:
+        cache_file = self._cache_path()
+        if not cache_file.exists():
+            return {}
+        try:
+            return json.loads(cache_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(f"缓存加载失败: {exc}")
+            return {}
+
+    def _save_cache(self, scripts: list[dict], scan_time: float) -> None:
+        cache = {"scan_time": scan_time, "files": {}}
+        for script in scripts:
+            rel_path = script.get("path", "")
+            if not rel_path:
+                continue
+            full_path = self.project_root / rel_path
+            try:
+                mtime = full_path.stat().st_mtime
+            except OSError:
+                mtime = 0
+            cache["files"][rel_path] = {
+                "mtime": mtime,
+                "skeleton": {key: value for key, value in script.items() if key != "_raw_references"},
+                "references": sorted(script.get("_raw_references", set())),
+            }
+        try:
+            self._cache_path().write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            logger.warning(f"缓存保存失败: {exc}")
+
+    def clear_cache(self) -> None:
+        cache_file = self._cache_path()
+        if cache_file.exists():
+            cache_file.unlink()
+            logger.info("缓存已清除")
+
     def scan(self) -> ProjectContext:
-        scripts = self._scan_scripts()
+        scan_start = time.time()
+        scripts = self._scan_scripts(incremental=True)
         scenes = self._scan_scenes()
         prefabs = self._scan_assets()
         configs = self._scan_configs()
@@ -46,6 +91,7 @@ class UnityScanner(BaseScanner):
 
         self._auto_generate_schemas(configs)
         detected_genre = self.detect_genre(scripts)
+        reference_graph, reverse_graph, class_to_path = build_reference_graph(self._scripts_with_refs)
 
         ctx = ProjectContext(
             project_path=str(self.project_root),
@@ -61,7 +107,19 @@ class UnityScanner(BaseScanner):
             prefabs=prefabs,
             directory_tree=self._build_directory_tree(),
             total_scripts=len(scripts),
+            reference_graph=reference_graph,
+            reverse_graph=reverse_graph,
+            class_to_path=class_to_path,
+            last_scan_time=scan_start,
         )
+
+        coverage = analyze_coverage(ctx.scripts)
+        ctx.test_files = coverage["test_files"]
+        ctx.covered_classes = coverage["covered_classes"]
+        ctx.uncovered_scripts = coverage["uncovered_scripts"]
+        ctx.test_coverage_ratio = coverage["coverage_ratio"]
+
+        self._save_cache(self._scripts_with_refs, scan_start)
         return ctx
 
     def _relpath(self, path: Path) -> str:
@@ -76,18 +134,63 @@ class UnityScanner(BaseScanner):
         match = re.search(r"m_EditorVersion:\s*([^\s]+)", content)
         return match.group(1) if match else "unknown"
 
-    def _scan_scripts(self) -> list[dict]:
+    def _build_namespace_to_classes(self, scripts: list[dict]) -> dict[str, list[str]]:
+        namespace_to_classes: dict[str, list[str]] = {}
+        for script in scripts:
+            namespace = script.get("namespace", "")
+            class_name = script.get("class_name", "")
+            if not namespace or not class_name:
+                continue
+            namespace_to_classes.setdefault(namespace, [])
+            if class_name not in namespace_to_classes[namespace]:
+                namespace_to_classes[namespace].append(class_name)
+        return namespace_to_classes
+
+    def _scan_scripts(self, incremental: bool = True) -> list[dict]:
         scripts: list[dict] = []
+        parsed_items: list[tuple[dict, str]] = []
+        cache = self._load_cache() if incremental else {}
+        cached_files = cache.get("files", {})
+        reused = 0
+        parsed = 0
         self._script_list = []
+        self._scripts_with_refs = []
 
         for path in sorted(self.assets_root.rglob("*.cs")):
-            if "Plugins" in path.parts:
+            if any(part in SKIP_DIRS or part == "Plugins" for part in path.parts):
                 continue
             rel_path = self._relpath(path)
-            content = path.read_text(encoding="utf-8", errors="ignore")
-            scripts.append(self._parse_csharp(content, rel_path))
             self._script_list.append(rel_path)
+            current_mtime = path.stat().st_mtime
+            cached = cached_files.get(rel_path)
 
+            if cached and cached.get("mtime") == current_mtime:
+                skeleton = dict(cached.get("skeleton", {}))
+                scripts.append(skeleton)
+                with_refs = dict(skeleton)
+                with_refs["_raw_references"] = set(cached.get("references", []))
+                self._scripts_with_refs.append(with_refs)
+                reused += 1
+                continue
+
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+                skeleton = self._parse_csharp(content, rel_path)
+            except Exception as exc:
+                logger.warning(f"脚本解析失败: {rel_path} ({exc})")
+                continue
+
+            parsed_items.append((skeleton, content))
+            scripts.append(skeleton)
+            parsed += 1
+
+        namespace_to_classes = self._build_namespace_to_classes(scripts)
+        for skeleton, content in parsed_items:
+            with_refs = dict(skeleton)
+            with_refs["_raw_references"] = extract_references(content, namespace_to_classes)
+            self._scripts_with_refs.append(with_refs)
+
+        logger.info(f"扫描完成：复用 {reused}，新解析 {parsed}，总共 {len(scripts)} 个脚本")
         return scripts
 
     def _parse_csharp(self, content: str, path: str) -> dict:
@@ -186,6 +289,14 @@ class UnityScanner(BaseScanner):
     def _auto_generate_schemas(self, config_files: list[str]):
         schema_dir = Path(__file__).resolve().parents[1] / "context" / "project_schemas"
         schema_dir.mkdir(parents=True, exist_ok=True)
+        current_outputs = {Path(rel_path).name for rel_path in config_files}
+
+        for existing_file in schema_dir.glob("*.json"):
+            if existing_file.name not in current_outputs:
+                try:
+                    existing_file.unlink()
+                except OSError as exc:
+                    logger.warning(f"旧 Schema 清理失败: {existing_file.name} ({exc})")
 
         for rel_path in config_files:
             full_path = self.project_root / rel_path
@@ -297,6 +408,16 @@ class UnityScanner(BaseScanner):
 
         if ctx.localization_files:
             recommendations.append({"skill": "translate", "label": "🌐 本地化", "reason": "发现语言文件"})
+
+        uncovered_count = len(ctx.uncovered_scripts)
+        if uncovered_count > 0:
+            recommendations.append(
+                {
+                    "skill": "generate_test",
+                    "label": "📊 测试覆盖",
+                    "reason": f"{uncovered_count} 个脚本未覆盖测试",
+                }
+            )
 
         return recommendations[:5]
 

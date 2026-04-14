@@ -19,6 +19,14 @@ class ProjectContext:
     prefabs: list = field(default_factory=list)
     directory_tree: str = ""
     total_scripts: int = 0
+    reference_graph: dict = field(default_factory=dict)
+    reverse_graph: dict = field(default_factory=dict)
+    class_to_path: dict = field(default_factory=dict)
+    last_scan_time: float = 0.0
+    test_files: list = field(default_factory=list)
+    covered_classes: list = field(default_factory=list)
+    uncovered_scripts: list = field(default_factory=list)
+    test_coverage_ratio: float = 0.0
 
 
 class BaseScanner(ABC):

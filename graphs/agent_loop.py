@@ -6,10 +6,11 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from agents.llm import create_llm
 from config.logger import logger
 from config.settings import Settings
-from context.loader import build_system_prompt
+from context.loader import build_system_prompt, extract_focus_class
 from database.db import db
 from graphs.safety import execute_tool_safely
-from mcp_tools.mcp_client import get_all_mcp_tools, get_project_path
+from mcp_tools.mcp_client import ENGINE_TOOL_MAP, get_all_mcp_tools, get_project_path
+from schemas.contracts import empty_result
 
 
 READ_ONLY_TOOLS = {
@@ -21,6 +22,10 @@ READ_ONLY_TOOLS = {
     "read_project_settings",
     "parse_meta_file",
     "find_references",
+    "validate_all_configs",
+    "engine_compile",
+    "engine_run_tests",
+    "engine_get_logs",
 }
 
 WRITE_ENABLED_SKILLS = {
@@ -163,6 +168,54 @@ def _build_tool_definitions(skill_id: str) -> list[dict]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "validate_all_configs",
+                "description": "校验项目所有配置文件，返回问题列表",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "engine_compile",
+                "description": "调用引擎编译当前项目，返回错误和警告列表。需要 Unity Server 连接。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "engine_run_tests",
+                "description": "运行项目的单元测试，返回 passed/failed 统计和失败详情",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "test_filter": {"type": "string", "description": "可选的测试名过滤器"}
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "engine_get_logs",
+                "description": "读取最近的引擎日志（用于查看编译/运行历史输出）",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "lines": {"type": "integer", "default": 100}
+                    },
+                },
+            },
+        },
     ]
 
     registered = set(get_all_mcp_tools())
@@ -170,11 +223,18 @@ def _build_tool_definitions(skill_id: str) -> list[dict]:
     if skill_id in WRITE_ENABLED_SKILLS:
         allowed_tools.add("write_file")
 
-    return [
-        tool
-        for tool in tool_defs
-        if tool["function"]["name"] in registered and tool["function"]["name"] in allowed_tools
-    ]
+    engine_map = ENGINE_TOOL_MAP.get("unity", {})
+    available = []
+    for tool in tool_defs:
+        name = tool["function"]["name"]
+        if name not in allowed_tools:
+            continue
+        if name in registered:
+            available.append(tool)
+            continue
+        if name in engine_map and engine_map[name] in registered:
+            available.append(tool)
+    return available
 
 
 def run_agent_loop(
@@ -183,6 +243,10 @@ def run_agent_loop(
     schema: dict = None,
     project_context: dict = None,
     chat_history: list = None,
+    tool_filter: list[str] = None,
+    max_steps: int = None,
+    extra_user_prompt: str = None,
+    temperature: float = None,
 ) -> dict:
     """核心 Agent Loop"""
     t0 = time.time()
@@ -190,7 +254,8 @@ def run_agent_loop(
     task_id = db.log_task_start(skill_id, user_input[:200])
     project_path = get_project_path() or (project_context or {}).get("project_path", "")
 
-    system = build_system_prompt(skill, schema, project_context)
+    focus = extract_focus_class(user_input, project_context or {})
+    system = build_system_prompt(skill, schema, project_context, focus_class=focus)
     messages = [SystemMessage(content=system)]
 
     if chat_history:
@@ -202,8 +267,12 @@ def run_agent_loop(
             elif role == "assistant":
                 messages.append(AIMessage(content=content))
 
+    full_input = user_input
+    if extra_user_prompt:
+        full_input = f"{user_input}\n\n{extra_user_prompt}"
+
     plan_prompt = (
-        f"用户需求：{user_input}\n\n"
+        f"用户需求：{full_input}\n\n"
         "请先输出你的执行计划（编号列表），然后逐步执行。\n"
         "每完成一步，简要报告结果并继续下一步。\n"
         "如果某步失败，说明原因并调整计划。"
@@ -211,15 +280,38 @@ def run_agent_loop(
     messages.append(HumanMessage(content=plan_prompt))
 
     tool_defs = _build_tool_definitions(skill_id)
+    if tool_filter is not None:
+        tool_defs = [tool for tool in tool_defs if tool["function"]["name"] in tool_filter]
+        logger.info(f"工具过滤: {len(tool_defs)} 个工具可用 ({tool_filter})")
+
+    tool_names = {tool["function"]["name"] for tool in tool_defs}
+    if skill_id == "validate_build" and not (
+        {"engine_compile", "engine_run_tests", "engine_get_logs"} & tool_names
+    ):
+        duration = time.time() - t0
+        db.log_task_end(task_id, "failed", 0, duration, "Unity 未配置或 Unity Server 未连接")
+        result = empty_result(route="agent_loop", task_id=task_id)
+        result["status"] = "failed"
+        result["summary"] = "Unity 编译/测试不可用"
+        result["display"] = (
+            "❌ Unity 未配置或 Unity Server 未连接，当前无法执行真实编译/测试。\n\n"
+            "请在 .env 中设置 UNITY_EXECUTABLE_PATH，并重启 GameDev。"
+        )
+        result["error"] = "Unity 未配置或 Unity Server 未连接"
+        result["duration"] = duration
+        return result
+
     task_type = "review" if skill_id in ("review_code", "analyze_perf") else "generation"
-    llm = create_llm(task_type=task_type)
+    effective_temp = temperature if temperature is not None else None
+    llm = create_llm(task_type=task_type, temperature=effective_temp)
     if tool_defs:
         llm = llm.bind_tools(tool_defs)
 
     total_tokens = 0
     output_files = []
 
-    for step in range(Settings.MAX_AGENT_STEPS):
+    effective_max_steps = max_steps if max_steps is not None else Settings.MAX_AGENT_STEPS
+    for step in range(effective_max_steps):
         try:
             response = llm.invoke(messages)
         except Exception as exc:
@@ -230,13 +322,13 @@ def run_agent_loop(
             except Exception as exc2:
                 duration = time.time() - t0
                 db.log_task_end(task_id, "failed", total_tokens, duration, str(exc2))
-                return {
-                    "status": "failed",
-                    "error": f"LLM 调用失败: {exc2}",
-                    "tokens": total_tokens,
-                    "display": f"❌ LLM 调用失败: {exc2}",
-                    "duration": duration,
-                }
+                result = empty_result(route="agent_loop", task_id=task_id)
+                result["status"] = "failed"
+                result["error"] = f"LLM 调用失败: {exc2}"
+                result["display"] = f"❌ LLM 调用失败: {exc2}"
+                result["tokens"] = total_tokens
+                result["duration"] = duration
+                return result
 
         messages.append(response)
         total_tokens += _extract_total_tokens(response)
@@ -271,18 +363,31 @@ def run_agent_loop(
     status = "success" if final_content else "failed"
 
     display = final_content
+    output_files = list(dict.fromkeys(output_files))
     if output_files:
         display += "\n\n### 生成的文件\n"
         for file_path in output_files:
             display += f"- ✅ {file_path}\n"
 
+    summary = ""
+    if final_content:
+        first_line = final_content.split("\n")[0].strip()
+        summary = first_line[:80] if first_line else final_content[:80]
+
+    steps_count = len([msg for msg in messages if isinstance(msg, ToolMessage)])
+
     db.log_task_end(task_id, status, total_tokens, duration)
 
-    return {
-        "status": status,
-        "display": display,
-        "tokens": total_tokens,
-        "duration": duration,
-        "output_files": output_files,
-        "steps": len([msg for msg in messages if isinstance(msg, ToolMessage)]),
-    }
+    result = empty_result(route="agent_loop", task_id=task_id)
+    result["status"] = status
+    result["display"] = display
+    result["summary"] = summary or f"{skill_id} 完成"
+    result["output_files"] = output_files
+    result["steps"] = steps_count
+    result["tokens"] = total_tokens
+    result["duration"] = duration
+    if status == "failed":
+        result["error"] = "未生成最终输出"
+        if not result["display"]:
+            result["display"] = "❌ 未生成最终输出"
+    return result

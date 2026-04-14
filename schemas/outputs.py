@@ -23,6 +23,23 @@ class ConfigModifyPlan(BaseModel):
     summary: str
 
 
+class ConfigBatchAction(BaseModel):
+    """单条批量配置修改规则"""
+
+    file_path: str
+    filter: dict = Field(default_factory=dict)
+    operation: Literal["multiply", "add", "set"]
+    target_field: str
+    value: float | int | str
+
+
+class ConfigBatchPlan(BaseModel):
+    """批量配置修改计划"""
+
+    actions: list[ConfigBatchAction] = Field(min_length=1)
+    summary: str
+
+
 class CodeModifyAction(BaseModel):
     """单条代码修改操作"""
 
@@ -56,6 +73,23 @@ class CodeReviewOutput(BaseModel):
     summary: str
     issues: list[CodeIssue] = Field(default_factory=list)
     score: int = Field(ge=0, le=100)
+
+
+class SubTask(BaseModel):
+    """单个子任务"""
+
+    step_id: int = Field(ge=1)
+    description: str = Field(min_length=10, max_length=200)
+    target_files: list[str] = Field(min_length=1, max_length=5)
+    tool_hint: Literal["read", "write", "verify", "mixed"]
+    depends_on: list[int] = Field(default_factory=list)
+
+
+class SubTaskPlan(BaseModel):
+    """Supervisor 的执行计划"""
+
+    subtasks: list[SubTask] = Field(min_length=1, max_length=8)
+    summary: str = Field(min_length=5)
 
 
 def try_parse(text: str, model: type[BaseModel]) -> tuple[BaseModel | None, str]:

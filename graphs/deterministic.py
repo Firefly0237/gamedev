@@ -7,11 +7,12 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agents.llm import create_llm
 from config.logger import logger
 from config.settings import Settings
-from context.loader import build_system_prompt
+from context.loader import build_system_prompt, extract_focus_class
 from database.db import db
 from graphs.safety import normalize_path, safe_write_file
 from mcp_tools.mcp_client import call_mcp_tool, get_project_path
-from schemas.outputs import CodeModifyPlan, ConfigModifyPlan, try_parse
+from schemas.contracts import empty_result
+from schemas.outputs import CodeModifyPlan, ConfigBatchPlan, ConfigModifyPlan, try_parse
 
 
 def _extract_total_tokens(response) -> int:
@@ -27,7 +28,8 @@ def _resolve_project_path(project_context: dict | None) -> str:
 
 
 def _build_code_modify_system(user_input: str, skill: dict, schema: dict, project_context: dict) -> str:
-    system = build_system_prompt(skill, schema, project_context)
+    focus = extract_focus_class(user_input, project_context or {})
+    system = build_system_prompt(skill, schema, project_context, focus_class=focus)
     project_path = _resolve_project_path(project_context)
     user_lower = user_input.lower()
 
@@ -61,7 +63,8 @@ def run_config_modify(user_input: str, skill: dict, schema: dict, project_contex
     t0 = time.time()
     task_id = db.log_task_start("modify_config", user_input[:200])
 
-    system = build_system_prompt(skill, schema, project_context)
+    focus = extract_focus_class(user_input, project_context or {})
+    system = build_system_prompt(skill, schema, project_context, focus_class=focus)
     llm = create_llm(task_type="generation", temperature=0.1)
     total_tokens = 0
 
@@ -95,12 +98,13 @@ def run_config_modify(user_input: str, skill: dict, schema: dict, project_contex
     if not plan:
         duration = time.time() - t0
         db.log_task_end(task_id, "failed", total_tokens, duration, last_error)
-        return {
-            "status": "failed",
-            "error": f"解析失败（{Settings.MAX_RETRIES}次）: {last_error}",
-            "tokens": total_tokens,
-            "duration": duration,
-        }
+        result = empty_result(route="deterministic", task_id=task_id)
+        result["status"] = "failed"
+        result["error"] = f"解析失败（{Settings.MAX_RETRIES}次）: {last_error}"
+        result["display"] = f"❌ {result['error']}"
+        result["tokens"] = total_tokens
+        result["duration"] = duration
+        return result
 
     project_path = _resolve_project_path(project_context)
     results = []
@@ -162,22 +166,207 @@ def run_config_modify(user_input: str, skill: dict, schema: dict, project_contex
     success_count = sum(1 for result in results if result.get("success"))
     status = "success" if success_count == len(results) else ("partial" if success_count > 0 else "failed")
 
-    display = f"## 配置修改结果\n\n{plan.summary}\n\n"
+    summary = plan.summary
+    display = f"## 配置修改结果\n\n{summary}\n\n"
+    output_files = []
     for result in results:
         if result.get("success"):
             display += f"✅ {result['file']}: {result['field']} {result['old']} → {result['new']}\n"
+            if result.get("file") and result["file"] not in output_files:
+                output_files.append(result["file"])
         else:
             display += f"❌ {result.get('file', '?')}: {result.get('error', '未知错误')}\n"
 
     duration = time.time() - t0
     db.log_task_end(task_id, status, total_tokens, duration)
-    return {
-        "status": status,
-        "display": display,
-        "tokens": total_tokens,
-        "results": results,
-        "duration": duration,
-    }
+
+    result = empty_result(route="deterministic", task_id=task_id)
+    result["status"] = status
+    result["display"] = display
+    result["summary"] = summary
+    result["output_files"] = output_files
+    result["actions"] = results
+    result["tokens"] = total_tokens
+    result["duration"] = duration
+    if status == "failed":
+        failures = [item.get("error", "") for item in results if item.get("error")]
+        result["error"] = failures[0] if failures else "配置修改失败"
+    return result
+
+
+def run_config_batch(user_input: str, skill: dict, schema: dict, project_context: dict) -> dict:
+    """批量配置修改流程"""
+    t0 = time.time()
+    task_id = db.log_task_start("modify_config_batch", user_input[:200])
+
+    focus = extract_focus_class(user_input, project_context or {})
+    system = build_system_prompt(skill, schema, project_context, focus_class=focus)
+    llm = create_llm(task_type="generation", temperature=0.1)
+    total_tokens = 0
+
+    plan = None
+    last_error = ""
+    for attempt in range(Settings.MAX_RETRIES):
+        messages = [SystemMessage(content=system)]
+        if attempt == 0:
+            messages.append(HumanMessage(content=user_input))
+        else:
+            messages.append(
+                HumanMessage(
+                    content=(
+                        f"{user_input}\n\n上次输出格式错误: {last_error}\n"
+                        "请严格按照 ConfigBatchPlan 输出纯 JSON。"
+                    )
+                )
+            )
+
+        resp = llm.invoke(messages)
+        total_tokens += _extract_total_tokens(resp)
+
+        result, err = try_parse(resp.content, ConfigBatchPlan)
+        if result:
+            plan = result
+            break
+
+        last_error = err
+        logger.warning(f"ConfigBatch 第{attempt + 1}次解析失败: {err}")
+
+    if not plan:
+        duration = time.time() - t0
+        db.log_task_end(task_id, "failed", total_tokens, duration, last_error)
+        result = empty_result(route="deterministic", task_id=task_id)
+        result["status"] = "failed"
+        result["error"] = f"批量修改解析失败: {last_error}"
+        result["display"] = f"❌ {result['error']}"
+        result["tokens"] = total_tokens
+        result["duration"] = duration
+        return result
+
+    project_path = _resolve_project_path(project_context)
+    all_changes = []
+    output_files = []
+
+    for action in plan.actions:
+        full_path = normalize_path(action.file_path, project_path)
+        try:
+            raw = call_mcp_tool("read_file", {"path": full_path})
+            data = json.loads(raw)
+
+            items = data if isinstance(data, list) else data.get("items", data.get("data", [data]))
+            if not isinstance(items, list):
+                items = [items]
+
+            filtered = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if not action.filter:
+                    filtered.append(item)
+                    continue
+
+                matched = all(str(item.get(key)) == str(value) for key, value in action.filter.items())
+                if matched:
+                    filtered.append(item)
+
+            if not filtered:
+                all_changes.append(
+                    {
+                        "file": action.file_path,
+                        "success": False,
+                        "error": f"filter {action.filter} 未匹配任何记录",
+                    }
+                )
+                continue
+
+            for item in filtered:
+                if action.target_field not in item:
+                    all_changes.append(
+                        {
+                            "file": action.file_path,
+                            "match": str(item.get("name", item.get("id", "?")))[:30],
+                            "success": False,
+                            "error": f"字段不存在: {action.target_field}",
+                        }
+                    )
+                    continue
+
+                old_value = item[action.target_field]
+                if action.operation == "multiply":
+                    new_value = type(old_value)(float(old_value) * float(action.value))
+                elif action.operation == "add":
+                    new_value = type(old_value)(float(old_value) + float(action.value))
+                else:
+                    new_value = action.value
+
+                item[action.target_field] = new_value
+                all_changes.append(
+                    {
+                        "file": action.file_path,
+                        "match": str(item.get("name", item.get("id", "?")))[:30],
+                        "field": action.target_field,
+                        "old": old_value,
+                        "new": new_value,
+                        "success": True,
+                    }
+                )
+
+            new_json = json.dumps(data, ensure_ascii=False, indent=2)
+            write_result = safe_write_file(full_path, new_json, project_path)
+            if write_result["success"] and action.file_path not in output_files:
+                output_files.append(action.file_path)
+            elif not write_result["success"]:
+                all_changes.append(
+                    {
+                        "file": action.file_path,
+                        "success": False,
+                        "error": write_result.get("error", "写回失败"),
+                    }
+                )
+        except Exception as exc:
+            all_changes.append({"file": action.file_path, "success": False, "error": str(exc)})
+
+    success_count = sum(1 for change in all_changes if change.get("success"))
+    total_count = len(all_changes)
+    if success_count == 0:
+        status = "failed"
+    elif success_count == total_count:
+        status = "success"
+    else:
+        status = "partial"
+
+    display = f"## 批量配置修改\n\n**{plan.summary}**\n\n"
+    display += f"共影响 {success_count} 条记录\n\n"
+
+    success_changes = [change for change in all_changes if change.get("success")]
+    failed_changes = [change for change in all_changes if not change.get("success")]
+
+    if success_changes:
+        display += "### 变更明细（前 5 条）\n\n"
+        for change in success_changes[:5]:
+            display += f"- ✅ {change.get('match', '?')}: {change['field']} {change['old']} → {change['new']}\n"
+        if len(success_changes) > 5:
+            display += f"- ... 还有 {len(success_changes) - 5} 条变更\n"
+
+    if failed_changes:
+        display += "\n### 失败项\n\n"
+        for change in failed_changes:
+            display += f"- ❌ {change.get('file', '?')}: {change.get('error', '')}\n"
+
+    duration = time.time() - t0
+    db.log_task_end(task_id, status, total_tokens, duration)
+
+    result = empty_result(route="deterministic", task_id=task_id)
+    result["status"] = status
+    result["display"] = display
+    result["summary"] = plan.summary
+    result["output_files"] = output_files
+    result["actions"] = all_changes
+    result["tokens"] = total_tokens
+    result["duration"] = duration
+    if status == "failed":
+        failures = [item.get("error", "") for item in all_changes if item.get("error")]
+        result["error"] = failures[0] if failures else "批量配置修改失败"
+    return result
 
 
 def run_code_modify(user_input: str, skill: dict, schema: dict, project_context: dict) -> dict:
@@ -214,7 +403,13 @@ def run_code_modify(user_input: str, skill: dict, schema: dict, project_context:
     if not plan:
         duration = time.time() - t0
         db.log_task_end(task_id, "failed", total_tokens, duration, last_error)
-        return {"status": "failed", "error": f"解析失败: {last_error}", "tokens": total_tokens, "duration": duration}
+        result = empty_result(route="deterministic", task_id=task_id)
+        result["status"] = "failed"
+        result["error"] = f"解析失败（{Settings.MAX_RETRIES}次）: {last_error}"
+        result["display"] = f"❌ {result['error']}"
+        result["tokens"] = total_tokens
+        result["duration"] = duration
+        return result
 
     project_path = _resolve_project_path(project_context)
     results = []
@@ -255,12 +450,27 @@ def run_code_modify(user_input: str, skill: dict, schema: dict, project_context:
     status = "success" if success_count == len(results) else ("partial" if success_count > 0 else "failed")
 
     display = f"## 代码修改结果\n\n{plan.summary}\n\n"
+    output_files = []
     for result in results:
         if result.get("success"):
             display += f"✅ {result['file']}: `{result['search']}` → `{result['replace']}`\n"
+            if result["file"] not in output_files:
+                output_files.append(result["file"])
         else:
             display += f"❌ {result.get('file', '?')}: {result.get('error', '')}\n"
 
     duration = time.time() - t0
     db.log_task_end(task_id, status, total_tokens, duration)
-    return {"status": status, "display": display, "tokens": total_tokens, "duration": duration, "results": results}
+
+    result = empty_result(route="deterministic", task_id=task_id)
+    result["status"] = status
+    result["display"] = display
+    result["summary"] = plan.summary
+    result["output_files"] = output_files
+    result["actions"] = results
+    result["tokens"] = total_tokens
+    result["duration"] = duration
+    if status == "failed":
+        failures = [item.get("error", "") for item in results if item.get("error")]
+        result["error"] = failures[0] if failures else "代码修改失败"
+    return result

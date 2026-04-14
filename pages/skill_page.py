@@ -38,6 +38,49 @@ def render_skill_page(skill_name: str):
             selected = st.selectbox("选择要审查的脚本", scripts, key="review_file")
             user_input = selected
 
+    if skill_name == "generate_test":
+        ctx = st.session_state.get("project_context", {})
+        uncovered = ctx.get("uncovered_scripts", [])
+        all_scripts = st.session_state.get("script_list", [])
+
+        if uncovered:
+            uncovered_paths = [s.get("path", "") for s in uncovered if s.get("path")]
+            st.info(f"📊 检测到 {len(uncovered_paths)} 个脚本未覆盖测试")
+
+            mode = st.radio(
+                "选择模式",
+                ["从未覆盖列表选择", "从全部脚本选择", "手动输入"],
+                horizontal=True,
+                key="gen_test_mode",
+            )
+
+            if mode == "从未覆盖列表选择":
+                selected_files = st.multiselect(
+                    "选择要生成测试的脚本",
+                    uncovered_paths,
+                    default=uncovered_paths[:1],
+                    key="gen_test_uncovered",
+                )
+                if selected_files:
+                    user_input = "为以下脚本生成测试: " + ", ".join(selected_files)
+            elif mode == "从全部脚本选择":
+                selected_files = st.multiselect(
+                    "选择要生成测试的脚本",
+                    all_scripts,
+                    key="gen_test_all",
+                )
+                if selected_files:
+                    user_input = "为以下脚本生成测试: " + ", ".join(selected_files)
+        else:
+            if all_scripts:
+                selected = st.selectbox(
+                    "选择要生成测试的脚本",
+                    all_scripts,
+                    key="gen_test_select",
+                )
+                if selected:
+                    user_input = f"为 {selected} 生成测试"
+
     if skill_name == "translate":
         langs = st.multiselect(
             "目标语言",

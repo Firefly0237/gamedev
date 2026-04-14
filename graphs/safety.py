@@ -1,3 +1,4 @@
+import difflib
 import os
 import re
 from pathlib import Path
@@ -5,16 +6,30 @@ from pathlib import Path
 from config.logger import logger
 from mcp_tools.mcp_client import call_mcp_tool, get_project_path, is_mcp_connected
 
+# 注意：以 "engine_" 开头的工具名会在 mcp_client.call_tool 中自动翻译为引擎特定工具名。
+# Supervisor 的 VERIFY 阶段会调用 validate_csharp_basic 对每个生成的文件做语法检查。
 
 def normalize_path(path: str, project_path: str = "") -> str:
     """路径归一化：相对路径拼接项目根目录"""
+    raw_path = (path or "").strip()
     if not project_path:
         project_path = get_project_path()
     if not project_path:
-        return os.path.normpath(path)
-    if not os.path.isabs(path):
-        path = os.path.join(project_path, path)
-    return os.path.normpath(path)
+        return os.path.normpath(raw_path)
+
+    project_norm = os.path.normpath(project_path)
+    input_norm = os.path.normpath(raw_path)
+
+    if os.path.isabs(input_norm):
+        return input_norm
+
+    project_name = Path(project_norm).name
+    parts = Path(input_norm).parts
+
+    if parts and parts[0] == project_name:
+        input_norm = os.path.normpath(os.path.join(*parts[1:])) if len(parts) > 1 else ""
+
+    return os.path.normpath(os.path.join(project_norm, input_norm))
 
 
 def safe_write_file(path: str, content: str, project_path: str = "") -> dict:
@@ -27,9 +42,27 @@ def safe_write_file(path: str, content: str, project_path: str = "") -> dict:
     old_content = ""
     try:
         old_content = call_mcp_tool("read_file", {"path": full_path})
-        exists = True
+        if isinstance(old_content, str) and old_content.lstrip().startswith("ENOENT:"):
+            old_content = ""
+            exists = False
+        else:
+            exists = True
     except Exception:
         exists = False
+
+    diff_text = ""
+    if exists:
+        try:
+            diff_lines = difflib.unified_diff(
+                (old_content or "").splitlines(keepends=True),
+                content.splitlines(keepends=True),
+                fromfile=f"{Path(full_path).name} (old)",
+                tofile=f"{Path(full_path).name} (new)",
+                n=3,
+            )
+            diff_text = "".join(diff_lines)[:5000]
+        except Exception:
+            diff_text = ""
 
     if exists and is_mcp_connected("git"):
         try:
@@ -47,17 +80,17 @@ def safe_write_file(path: str, content: str, project_path: str = "") -> dict:
     try:
         call_mcp_tool("write_file", {"path": full_path, "content": content})
     except Exception as exc:
-        return {"success": False, "error": f"写入失败: {exc}", "path": path}
+        return {"success": False, "error": f"写入失败: {exc}", "path": path, "diff": ""}
 
     try:
         verify = call_mcp_tool("read_file", {"path": full_path})
         if len(verify.strip()) < 5:
-            return {"success": False, "error": "写入后验证失败: 内容异常", "path": path}
+            return {"success": False, "error": "写入后验证失败: 内容异常", "path": path, "diff": ""}
     except Exception as exc:
-        return {"success": False, "error": f"写入后验证失败: {exc}", "path": path}
+        return {"success": False, "error": f"写入后验证失败: {exc}", "path": path, "diff": ""}
 
     logger.info(f"文件写入成功: {path}")
-    return {"success": True, "path": path, "is_new": not exists}
+    return {"success": True, "path": path, "is_new": not exists, "error": "", "diff": diff_text}
 
 
 def execute_tool_safely(tool_name: str, arguments: dict, project_path: str = "") -> str:
