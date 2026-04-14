@@ -11,6 +11,16 @@
 2. 生成完整 Shader 文件
 3. 用 write_file 写入 Assets/Shaders/Generated/
 
+## 自动验证
+
+生成完成后系统会自动做：
+1. Shader 声明检查：必须有 Shader "name" { ... }
+2. 结构检查：必须包含 SubShader 块和 Pass 块
+3. 花括号匹配
+4. （可选）真编译：Unity 配置可用时通过 engine_compile 验证
+
+确保输出的 Shader 是完整的、可编译的最小单元。
+
 ## 红线
 
 - 必须是完整可编译的 Shader
