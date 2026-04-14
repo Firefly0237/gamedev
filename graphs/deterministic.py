@@ -459,9 +459,6 @@ def run_code_modify(user_input: str, skill: dict, schema: dict, project_context:
         else:
             display += f"❌ {result.get('file', '?')}: {result.get('error', '')}\n"
 
-    duration = time.time() - t0
-    db.log_task_end(task_id, status, total_tokens, duration)
-
     result = empty_result(route="deterministic", task_id=task_id)
     result["status"] = status
     result["display"] = display
@@ -469,8 +466,33 @@ def run_code_modify(user_input: str, skill: dict, schema: dict, project_context:
     result["output_files"] = output_files
     result["actions"] = results
     result["tokens"] = total_tokens
-    result["duration"] = duration
+    result["duration"] = time.time() - t0
+
+    cs_files = [file_path for file_path in output_files if file_path.endswith(".cs")]
+    if cs_files and status in ("success", "partial"):
+        from graphs.verify import verify_files
+
+        verify_result = verify_files(
+            files=cs_files,
+            project_context=project_context,
+            mode=Settings.DEFAULT_VERIFY_MODE,
+            skill_id="modify_code",
+        )
+        result["verification"] = verify_result
+
+        if not verify_result["passed"]:
+            result["status"] = "partial"
+            fail_msgs = "\n".join(
+                f"  - {detail['message']}"
+                for detail in verify_result["details"]
+                if not detail["passed"]
+            )
+            result["display"] += f"\n\n### ⚠️ 修改后验证未通过\n{fail_msgs}\n\n如需修复，请再次描述需要修改的内容。"
+            result["error"] = "修改后验证未通过"
+
     if status == "failed":
         failures = [item.get("error", "") for item in results if item.get("error")]
         result["error"] = failures[0] if failures else "代码修改失败"
+
+    db.log_task_end(task_id, result["status"], result["tokens"], result["duration"], result["error"])
     return result
