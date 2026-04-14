@@ -247,6 +247,8 @@ def run_agent_loop(
     max_steps: int = None,
     extra_user_prompt: str = None,
     temperature: float = None,
+    verify_mode: str = None,
+    verify_skill_id: str = None,
 ) -> dict:
     """核心 Agent Loop"""
     t0 = time.time()
@@ -376,8 +378,6 @@ def run_agent_loop(
 
     steps_count = len([msg for msg in messages if isinstance(msg, ToolMessage)])
 
-    db.log_task_end(task_id, status, total_tokens, duration)
-
     result = empty_result(route="agent_loop", task_id=task_id)
     result["status"] = status
     result["display"] = display
@@ -386,8 +386,91 @@ def run_agent_loop(
     result["steps"] = steps_count
     result["tokens"] = total_tokens
     result["duration"] = duration
+
+    if output_files and status == "success":
+        from graphs.verify import verify_files
+
+        effective_verify_mode = verify_mode or Settings.DEFAULT_VERIFY_MODE
+        effective_verify_skill = verify_skill_id or skill_id
+
+        if effective_verify_mode != "off":
+            logger.info(f"Agent Loop verify 启动: mode={effective_verify_mode}, skill={effective_verify_skill}")
+            verify_result = verify_files(
+                files=output_files,
+                project_context=project_context,
+                mode=effective_verify_mode,
+                skill_id=effective_verify_skill,
+            )
+            result["verification"] = verify_result
+
+            if not verify_result["passed"]:
+                logger.info("Agent Loop verify 未通过，尝试修复一次")
+                error_summary = "\n".join(
+                    f"- {detail['message']}"
+                    for detail in verify_result["details"]
+                    if not detail["passed"]
+                )
+                fix_prompt = f"上次生成的文件验证失败，错误如下:\n{error_summary}\n\n请修复这些错误后重新生成。"
+
+                fix_result = run_agent_loop(
+                    user_input=user_input,
+                    skill=skill,
+                    schema=schema,
+                    project_context=project_context,
+                    chat_history=chat_history,
+                    tool_filter=tool_filter,
+                    max_steps=max_steps,
+                    extra_user_prompt=fix_prompt,
+                    temperature=temperature,
+                    verify_mode="off",
+                    verify_skill_id=effective_verify_skill,
+                )
+
+                result["tokens"] += fix_result.get("tokens", 0)
+                result["duration"] += fix_result.get("duration", 0)
+
+                if fix_result["status"] == "success" and fix_result.get("output_files"):
+                    new_files = fix_result["output_files"]
+                    result["output_files"] = list(dict.fromkeys(result["output_files"] + new_files))
+
+                    re_verify = verify_files(
+                        files=result["output_files"],
+                        project_context=project_context,
+                        mode=effective_verify_mode,
+                        skill_id=effective_verify_skill,
+                    )
+                    result["verification"] = re_verify
+
+                    if re_verify["passed"]:
+                        result["display"] += "\n\n### 🔧 自动修复成功"
+                        logger.info("Agent Loop 修复成功")
+                    else:
+                        result["status"] = "partial"
+                        result["display"] += "\n\n### ⚠️ 自动修复未完全通过"
+                        fail_msgs = "\n".join(
+                            f"  - {detail['message']}"
+                            for detail in re_verify["details"]
+                            if not detail["passed"]
+                        )
+                        if fail_msgs:
+                            result["display"] += f"\n{fail_msgs}"
+                        result["error"] = "自动修复后验证仍未通过"
+                else:
+                    result["status"] = "partial"
+                    result["display"] += "\n\n### ⚠️ 自动修复失败"
+                    fail_msgs = "\n".join(
+                        f"  - {detail['message']}"
+                        for detail in verify_result["details"]
+                        if not detail["passed"]
+                    )
+                    if fail_msgs:
+                        result["display"] += f"\n{fail_msgs}"
+                    result["error"] = "自动修复失败"
+
     if status == "failed":
         result["error"] = "未生成最终输出"
         if not result["display"]:
             result["display"] = "❌ 未生成最终输出"
+
+    db.log_task_end(task_id, result["status"], result["tokens"], result["duration"], result["error"])
     return result
