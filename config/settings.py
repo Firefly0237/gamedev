@@ -36,6 +36,11 @@ class Settings:
     UNITY_EXECUTABLE_PATH: str = os.getenv("UNITY_EXECUTABLE_PATH", "")
     UNITY_BUILD_TIMEOUT: int = int(os.getenv("UNITY_BUILD_TIMEOUT", "300"))
 
+    DEFAULT_VERIFY_MODE: str = os.getenv("DEFAULT_VERIFY_MODE", "syntax")
+    # off    = 不验证（旧行为）
+    # syntax = 仅语法层（永远可用，2-3 秒）
+    # full   = 语法 + 真编译 + 真测试（需要 Unity，30-70 秒）
+
     LANGCHAIN_TRACING: bool = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
 
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
