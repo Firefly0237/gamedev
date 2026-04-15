@@ -4,31 +4,6 @@ from config.logger import logger
 from database.db import db
 
 
-def _render_execution_result(target, result: dict) -> None:
-    if result["status"] in ("success", "partial"):
-        target.markdown(result.get("display", ""))
-
-        if result.get("output_files"):
-            target.caption(f"📁 输出文件: {len(result['output_files'])} 个")
-
-        verif = result.get("verification", {})
-        if verif.get("performed"):
-            if verif["passed"]:
-                target.success("✅ 验证通过")
-            else:
-                target.warning("⚠️ 验证未通过")
-            for detail in verif.get("details", []):
-                emoji = "✅" if detail["passed"] else "❌"
-                target.caption(f"{emoji} {detail['type']}: {detail.get('message', '')}")
-
-        col1, col2, col3 = target.columns(3)
-        col1.metric("耗时", f"{result.get('duration', 0):.1f}s")
-        col2.metric("Token", f"{result.get('tokens', 0):,}")
-        col3.metric("步骤", f"{result.get('steps', 0)}")
-    else:
-        target.error(f"❌ {result.get('error', '未知错误')}")
-
-
 def run_agent(skill_name: str, user_input: str, container=None):
     """Agent Loop 执行"""
     target = container or st
@@ -69,7 +44,10 @@ def run_agent(skill_name: str, user_input: str, container=None):
             state="complete",
         )
 
-    _render_execution_result(target, result)
+    # [后续8] 原展示代码已被 render_task_card 替换，如需回滚参考 git 历史
+    from pages._task_card import render_task_card
+
+    render_task_card(result, container=target)
 
     return result
 
@@ -106,30 +84,10 @@ def run_deterministic(skill_name: str, user_input: str, container=None):
             state="complete",
         )
 
-    _render_execution_result(target, result)
+    # [后续8] 原展示代码已被 render_task_card 替换，如需回滚参考 git 历史
+    from pages._task_card import render_task_card
 
-    if result and result.get("status") in ("success", "partial") and result.get("output_files"):
-        from scanner.reference_graph import get_impact_scope
-
-        project_context = st.session_state.get("project_context", {})
-        reverse_graph = project_context.get("reverse_graph", {})
-        class_to_path = project_context.get("class_to_path", {})
-
-        impacted_files = set()
-        for output_file in result["output_files"]:
-            normalized_output = str(output_file).replace("/", "\\")
-            for class_name, path in class_to_path.items():
-                normalized_path = str(path).replace("/", "\\")
-                if normalized_output == normalized_path or normalized_output.endswith(normalized_path):
-                    for impacted_class in get_impact_scope(class_name, reverse_graph, depth=2):
-                        impacted_path = class_to_path.get(impacted_class)
-                        if impacted_path:
-                            impacted_files.add(impacted_path)
-
-        if impacted_files:
-            target.warning(f"⚠️ 以下 {len(impacted_files)} 个文件可能受影响：")
-            for impacted_path in list(sorted(impacted_files))[:10]:
-                target.caption(f"  - {impacted_path}")
+    render_task_card(result, container=target)
 
     return result
 

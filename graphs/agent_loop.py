@@ -247,6 +247,7 @@ def run_agent_loop(
     max_steps: int = None,
     extra_user_prompt: str = None,
     temperature: float = None,
+    plan_first: bool = True,
     verify_mode: str = None,
     verify_skill_id: str = None,
 ) -> dict:
@@ -273,13 +274,21 @@ def run_agent_loop(
     if extra_user_prompt:
         full_input = f"{user_input}\n\n{extra_user_prompt}"
 
-    plan_prompt = (
-        f"用户需求：{full_input}\n\n"
-        "请先输出你的执行计划（编号列表），然后逐步执行。\n"
-        "每完成一步，简要报告结果并继续下一步。\n"
-        "如果某步失败，说明原因并调整计划。"
-    )
-    messages.append(HumanMessage(content=plan_prompt))
+    if plan_first:
+        plan_prompt = (
+            f"用户需求：{full_input}\n\n"
+            "请先输出你的执行计划（编号列表），然后逐步执行。\n"
+            "每完成一步，简要报告结果并继续下一步。\n"
+            "如果某步失败，说明原因并调整计划。"
+        )
+        messages.append(HumanMessage(content=plan_prompt))
+    else:
+        direct_prompt = (
+            f"用户需求：{full_input}\n\n"
+            "不要先做计划，不要先解释方案，直接开始执行。"
+            "如果需要工具，立刻调用；如果完成了，就简要汇报结果。"
+        )
+        messages.append(HumanMessage(content=direct_prompt))
 
     tool_defs = _build_tool_definitions(skill_id)
     if tool_filter is not None:
@@ -422,6 +431,7 @@ def run_agent_loop(
                     max_steps=max_steps,
                     extra_user_prompt=fix_prompt,
                     temperature=temperature,
+                    plan_first=plan_first,
                     verify_mode="off",
                     verify_skill_id=effective_verify_skill,
                 )

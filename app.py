@@ -33,6 +33,39 @@ def _set_query_param(key: str, value: str) -> None:
     st.rerun()
 
 
+def _build_actual_stages(result: dict) -> list[str]:
+    """根据执行结果构造实际阶段摘要。"""
+    lines = []
+    route = result.get("route", "")
+
+    if route == "supervisor":
+        actions = result.get("actions", [])
+        if actions:
+            lines.append(f"📋 拆解为 {len(actions)} 个子任务")
+        output_files = result.get("output_files", [])
+        if output_files:
+            lines.append(f"🔨 已生成 {len(output_files)} 个文件")
+    elif route == "deterministic":
+        actions = result.get("actions", [])
+        if actions:
+            success = sum(1 for action in actions if action.get("success"))
+            lines.append(f"🔧 修改 {success}/{len(actions)} 项")
+    elif route == "agent_loop":
+        steps = result.get("steps", 0)
+        if steps:
+            lines.append(f"🛠 调用工具 {steps} 次")
+
+    verif = result.get("verification", {})
+    if verif.get("performed"):
+        if verif.get("passed"):
+            lines.append("✔️ 验证通过")
+        else:
+            fail_count = sum(1 for detail in verif.get("details", []) if not detail.get("passed"))
+            lines.append(f"⚠️ 验证未通过 ({fail_count} 项)")
+
+    return lines
+
+
 def _render_skill_buttons(skill_dir: Path, fallback: list[tuple[str, str]]) -> None:
     if skill_dir.exists():
         md_files = sorted(skill_dir.glob("*.md"))
@@ -86,33 +119,37 @@ def render_chat() -> None:
                 st.write(response)
             else:
                 from pages._common import run_with_router
+                from graphs.router import classify_intent
+                from pages._task_card import get_route_stages, render_task_card
 
-                with st.spinner("🤖 思考中..."):
+                project_context = st.session_state.get("project_context", {})
+                try:
+                    route_hint = classify_intent(user_input, project_context)
+                    route_name = route_hint.get("route", "agent_loop")
+                except Exception:
+                    route_name = "agent_loop"
+
+                with st.status("🤖 执行中...", expanded=True) as status:
+                    stages = get_route_stages(route_name)
+                    if stages:
+                        status.write(f"{stages[0][1]} {stages[0][2]}")
+
                     result = run_with_router(user_input)
 
-                if result["status"] in ("success", "partial"):
-                    response = result.get("display", "完成")
-                    st.markdown(response)
-                    output_files = result.get("output_files", [])
-                    if output_files:
-                        preview = ", ".join(output_files[:3])
-                        suffix = "..." if len(output_files) > 3 else ""
-                        st.caption(f"📁 输出文件: {preview}{suffix}")
+                    actual_stages = _build_actual_stages(result)
+                    for stage_text in actual_stages:
+                        status.write(stage_text)
 
-                    verification = result.get("verification") or {}
-                    if verification.get("performed"):
-                        if verification.get("passed"):
-                            st.caption("✅ 已执行验证")
-                        else:
-                            st.caption("⚠️ 已执行验证，但存在未通过项")
+                    if result["status"] == "success":
+                        status.update(label="✅ 完成", state="complete")
+                    elif result["status"] == "partial":
+                        status.update(label="⚠️ 部分完成", state="error")
+                    else:
+                        status.update(label="❌ 失败", state="error")
 
-                    col1, col2, col3 = st.columns(3)
-                    col1.caption(f"⏱ {result.get('duration', 0):.1f}s")
-                    col2.caption(f"🔤 {result.get('tokens', 0):,} token")
-                    col3.caption(f"🛣 {result.get('route', 'unknown')}")
-                else:
-                    response = f"❌ {result.get('error', '执行失败')}"
-                    st.error(response)
+                # [后续8] 原展示代码已被 render_task_card 替换，如需回滚参考 git 历史
+                render_task_card(result)
+                response = result.get("summary") or result.get("display", "")[:200]
 
         st.session_state.chat_history.append({"role": "assistant", "content": response})
 

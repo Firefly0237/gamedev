@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -90,6 +91,10 @@ def _build_plan_system_prompt(skill: dict, project_context: dict) -> str:
 6. depends_on 列出依赖的前置 step_id（如生成测试要依赖被测的源文件已生成）
 7. 按依赖顺序排列，无依赖的放前面
 8. 数据类 → 配置 → 逻辑 → 测试 是常见的依赖顺序
+9. 每个 description 必须以动词开头："创建"、"生成"、"修改"、"添加"、"读取"、"检查"。
+   避免"实现 XXX"、"处理 XXX"、"完成 XXX" 这种模糊措辞
+10. 如果是 write 或 mixed 类型的 subtask，description 中必须明确要创建的
+    文件扩展名（.cs / .json / .shader / .md 等）
 
 只输出 JSON，不要任何额外说明文字。
 """
@@ -224,6 +229,14 @@ def run_execute(plan, project_context: dict, skill: dict | None = None) -> dict:
     all_results = []
     project_path = get_project_path() or (project_context or {}).get("project_path", "")
 
+    def _find_missing_targets(target_files: list[str]) -> list[str]:
+        missing = []
+        for target in target_files:
+            full_path = normalize_path(target, project_path)
+            if not full_path or not os.path.isfile(full_path):
+                missing.append(target)
+        return missing
+
     for subtask in plan.subtasks:
         deps_satisfied = all(dep in completed for dep in subtask.depends_on)
         if not deps_satisfied:
@@ -239,11 +252,33 @@ def run_execute(plan, project_context: dict, skill: dict | None = None) -> dict:
             }
 
         tool_filter = TOOL_FILTERS.get(subtask.tool_hint, TOOL_FILTERS["mixed"])
-        subtask_input = (
-            f"{subtask.description}\n\n"
-            f"目标文件: {', '.join(subtask.target_files)}\n"
-            "完成后简要确认结果。"
-        )
+        if subtask.tool_hint in ("write", "mixed"):
+            tool_filter = ["read_file", "write_file"]
+        if subtask.tool_hint in ("write", "mixed"):
+            subtask_input = (
+                f"任务: {subtask.description}\n\n"
+                "必须创建的文件(逐个通过 write_file 工具实际写入):\n"
+                + "\n".join(f"  - {file_path}" for file_path in subtask.target_files)
+                + "\n\n"
+                "执行要求:\n"
+                "1. 对上面列出的每一个文件，都必须调用一次 write_file 工具实际创建\n"
+                "2. 不要只在回复文字里描述文件内容，必须真正调用 write_file\n"
+                "3. 所有文件调用完成后，用一句话明确列出: "
+                "'已通过 write_file 创建: <文件1>, <文件2>, ...'\n"
+                "4. 如果某个文件无法创建，明确说明原因，不要跳过\n"
+            )
+        elif subtask.tool_hint == "verify":
+            subtask_input = (
+                f"验证任务: {subtask.description}\n\n"
+                f"涉及文件: {', '.join(subtask.target_files)}\n"
+                "使用验证工具检查后，如实报告结果。"
+            )
+        else:
+            subtask_input = (
+                f"任务: {subtask.description}\n\n"
+                f"相关文件: {', '.join(subtask.target_files)}\n"
+                "读取必要信息后简要汇报。"
+            )
         extra_prompt = None
         if subtask.tool_hint in ("write", "mixed"):
             extra_prompt = (
@@ -263,34 +298,88 @@ def run_execute(plan, project_context: dict, skill: dict | None = None) -> dict:
             max_steps=5,
             extra_user_prompt=extra_prompt,
             temperature=0.2,
+            plan_first=False,
         )
 
         all_results.append(result)
         total_tokens += result.get("tokens", 0)
 
-        if result["status"] == "success":
-            generated_files = list(result.get("output_files", []))
-            if subtask.tool_hint in ("write", "mixed") and not generated_files:
-                for target_file in subtask.target_files:
-                    full_path = normalize_path(target_file, project_path)
-                    if full_path and os.path.exists(full_path):
-                        generated_files.append(target_file)
+        first_pass_ok = result["status"] == "success"
+        second_pass_ok = True
+        missing_files = []
 
-            if subtask.tool_hint in ("write", "mixed") and not generated_files:
-                logger.warning(f"  ❌ subtask {subtask.step_id} 未生成目标文件")
+        if first_pass_ok and subtask.tool_hint in ("write", "mixed"):
+            missing_files = _find_missing_targets(subtask.target_files)
+            if missing_files:
+                second_pass_ok = False
+                logger.warning(
+                    f"  ⚠️ subtask {subtask.step_id} 声称成功，但目标文件缺失: {missing_files}"
+                )
+
+        if first_pass_ok and not second_pass_ok:
+            logger.info(f"  🔧 subtask {subtask.step_id} 触发定向补写重试")
+
+            retry_input = (
+                "紧急补写任务:\n\n"
+                f"原任务: {subtask.description}\n\n"
+                "以下文件未被实际创建，请立即通过 write_file 工具补写:\n"
+                + "\n".join(f"  - {file_path}" for file_path in missing_files)
+                + "\n\n"
+                "严格要求:\n"
+                "1. 对每个文件都必须调用 write_file 工具\n"
+                "2. 不要在回复中写文件内容，只调用工具\n"
+                "3. 调用完成后用一句话回复: '已补写 <文件名列表>'\n"
+            )
+
+            retry_result = run_agent_loop(
+                user_input=retry_input,
+                skill=skill,
+                project_context=project_context,
+                chat_history=None,
+                tool_filter=["read_file", "write_file"],
+                max_steps=3,
+                temperature=0.1,
+                plan_first=False,
+                verify_mode="off",
+                extra_user_prompt=(
+                    "这是一次定向补写重试。"
+                    "只允许补写缺失目标文件，不要分析，不要改其他文件。"
+                ),
+            )
+
+            total_tokens += retry_result.get("tokens", 0)
+            all_results.append(retry_result)
+            still_missing = _find_missing_targets(subtask.target_files)
+
+            if still_missing:
+                logger.error(f"  ❌ subtask {subtask.step_id} 补写后仍缺失: {still_missing}")
                 return {
                     "status": "failed",
                     "completed_subtasks": completed,
                     "failed_subtask": subtask,
-                    "failed_error": "执行成功但未生成任何目标文件",
+                    "failed_error": (
+                        f"Subtask {subtask.step_id} 的目标文件未能创建: "
+                        f"{', '.join(still_missing)}。可能原因: 模型未调用 write_file 或写入路径错误。"
+                    ),
                     "created_files": created_files,
                     "tokens": total_tokens,
                     "all_results": all_results,
                 }
 
-            result["output_files"] = generated_files
+            for file_path in retry_result.get("output_files", []):
+                if file_path not in created_files:
+                    created_files.append(file_path)
+            for file_path in subtask.target_files:
+                if file_path not in created_files:
+                    created_files.append(file_path)
             completed.append(subtask.step_id)
-            for file_path in generated_files:
+            logger.info(f"  ✅ subtask {subtask.step_id} 经补写完成")
+        elif first_pass_ok and second_pass_ok:
+            completed.append(subtask.step_id)
+            for file_path in result.get("output_files", []):
+                if file_path not in created_files:
+                    created_files.append(file_path)
+            for file_path in subtask.target_files:
                 if file_path not in created_files:
                     created_files.append(file_path)
             logger.info(f"  ✅ subtask {subtask.step_id} 完成")
@@ -369,12 +458,14 @@ def run_fix_loop(
 
     for subtask in subtasks_to_retry:
         tool_filter = TOOL_FILTERS.get(subtask.tool_hint, TOOL_FILTERS["mixed"])
+        if subtask.tool_hint in ("write", "mixed"):
+            tool_filter = ["read_file", "write_file"]
         subtask_input = f"{subtask.description}\n\n目标文件: {', '.join(subtask.target_files)}"
         extra_prompt = fix_prompt
         if subtask.tool_hint in ("write", "mixed"):
             extra_prompt += (
                 "\n\n你必须实际调用 write_file 重写目标文件，"
-                "不要只描述修复思路。"
+                "不要只描述修复思路，不要先分析项目结构。"
             )
 
         result = run_agent_loop(
@@ -385,6 +476,7 @@ def run_fix_loop(
             max_steps=5,
             temperature=0.1,
             extra_user_prompt=extra_prompt,
+            plan_first=False,
         )
 
         total_tokens += result.get("tokens", 0)
