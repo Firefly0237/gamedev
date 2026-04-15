@@ -1,5 +1,7 @@
 """MCP 客户端集成测试。"""
 
+import os
+
 import pytest
 
 from mcp_tools.mcp_client import call_mcp_tool, get_all_mcp_tools, get_mcp_status
@@ -27,6 +29,6 @@ class TestMCPClient:
         _ = mcp_initialized
         text = call_mcp_tool(
             "read_file",
-            {"path": f"{test_project_path}\\ProjectSettings\\ProjectVersion.txt"},
+            {"path": os.path.join(test_project_path, "ProjectSettings", "ProjectVersion.txt")},
         )
         assert "m_EditorVersion" in text
