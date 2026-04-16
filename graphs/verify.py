@@ -5,7 +5,8 @@ from typing import Callable
 from config.logger import logger
 from config.settings import Settings
 from graphs.safety import normalize_path, validate_csharp_basic
-from mcp_tools.mcp_client import call_mcp_tool, get_project_path, is_mcp_connected
+from mcp_tools.mcp_client import call_mcp_tool, get_all_mcp_tools, get_project_path, get_unity_status
+from mcp_tools.unity_coplay import is_engine_tool_available, run_engine_compile, run_engine_tests
 from schemas.contracts import empty_verification
 
 
@@ -180,32 +181,36 @@ def verify_files(
 
     engine_passed = True
     if mode == "full":
-        if Settings.is_unity_available() and is_mcp_connected("unity"):
-            logger.info("verify_files: 调用 engine_compile")
+        registered_tools = set(get_all_mcp_tools())
+        unity_status = get_unity_status()
+        if is_engine_tool_available("engine_compile", registered_tools):
+            logger.info("verify_files: 调用 Coplay compile wrapper")
             try:
-                compile_result = call_mcp_tool("engine_compile", {})
-                compile_data = json.loads(compile_result) if isinstance(compile_result, str) else compile_result
-
+                compile_data = run_engine_compile(call_mcp_tool, files)
+                compile_errors = compile_data.get("errors", [])
                 if compile_data.get("success"):
                     details.append(
                         {
                             "type": "compile",
                             "passed": True,
                             "message": f"Unity 编译通过 ({compile_data.get('duration', 0):.1f}s)",
+                            "provider": compile_data.get("provider", "coplay"),
+                            "errors": [],
                         }
                     )
                 else:
                     engine_passed = False
-                    errors = compile_data.get("errors", [])
                     error_summary = "; ".join(
                         f"{item.get('file', '?')}:{item.get('line', '?')} {item.get('message', '')[:80]}"
-                        for item in errors[:3]
+                        for item in compile_errors[:3]
                     )
                     details.append(
                         {
                             "type": "compile",
                             "passed": False,
-                            "message": f"Unity 编译失败: {error_summary}",
+                            "message": f"Unity 编译失败: {error_summary or '未知错误'}",
+                            "provider": compile_data.get("provider", "coplay"),
+                            "errors": compile_errors,
                         }
                     )
             except Exception as exc:
@@ -214,6 +219,7 @@ def verify_files(
                         "type": "compile",
                         "passed": False,
                         "message": f"Unity 编译调用失败: {exc}",
+                        "provider": "coplay",
                     }
                 )
                 engine_passed = False
@@ -222,16 +228,21 @@ def verify_files(
                 {
                     "type": "compile",
                     "passed": True,
-                    "message": "Unity 未配置，跳过真编译（降级到语法层）",
+                    "message": (
+                        "Unity MCP 未连接，跳过真编译（降级到语法层）"
+                        if unity_status.get("package_installed")
+                        else "未检测到 Coplay Unity MCP 包，跳过真编译（降级到语法层）"
+                    ),
+                    "provider": unity_status.get("provider", "coplay"),
+                    "skipped": True,
+                    "error_code": "ENGINE_UNAVAILABLE",
                 }
             )
 
-        if skill_id == "generate_test" and Settings.is_unity_available() and is_mcp_connected("unity") and engine_passed:
-            logger.info("verify_files: 调用 engine_run_tests")
+        if skill_id in ("generate_test", "validate_build") and is_engine_tool_available("engine_run_tests", registered_tools) and engine_passed:
+            logger.info("verify_files: 调用 Coplay test runner")
             try:
-                test_result = call_mcp_tool("engine_run_tests", {})
-                test_data = json.loads(test_result) if isinstance(test_result, str) else test_result
-
+                test_data = run_engine_tests(call_mcp_tool, mode="EditMode")
                 passed = test_data.get("passed", 0)
                 failed = test_data.get("failed", 0)
                 skipped = test_data.get("skipped", 0)
@@ -242,6 +253,7 @@ def verify_files(
                             "type": "test",
                             "passed": True,
                             "message": f"测试通过: {passed} 个（跳过 {skipped}）",
+                            "provider": test_data.get("provider", "coplay"),
                         }
                     )
                 else:
@@ -256,6 +268,8 @@ def verify_files(
                             "type": "test",
                             "passed": False,
                             "message": f"测试失败: {failed} 个. {fail_summary}",
+                            "provider": test_data.get("provider", "coplay"),
+                            "failures": failures,
                         }
                     )
             except Exception as exc:
@@ -264,9 +278,21 @@ def verify_files(
                         "type": "test",
                         "passed": False,
                         "message": f"测试调用失败: {exc}",
+                        "provider": "coplay",
                     }
                 )
                 engine_passed = False
+        elif skill_id in ("generate_test", "validate_build"):
+            details.append(
+                {
+                    "type": "test",
+                    "passed": True,
+                    "message": "Unity MCP 未连接，跳过真测试（降级到语法层）",
+                    "provider": unity_status.get("provider", "coplay"),
+                    "skipped": True,
+                    "error_code": "ENGINE_UNAVAILABLE",
+                }
+            )
 
     verification["passed"] = syntax_passed and engine_passed
     return verification

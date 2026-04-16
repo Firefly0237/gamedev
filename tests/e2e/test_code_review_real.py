@@ -19,7 +19,6 @@ class TestCodeReviewE2E:
             "审查 PlayerController 的性能和规范问题",
             skill=skill,
             project_context=scanned_context,
-            verify_mode="off",
         )
         assert result["status"] == "success"
         assert result["route"] == "agent_loop"

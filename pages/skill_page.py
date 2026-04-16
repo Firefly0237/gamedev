@@ -1,27 +1,24 @@
 def render_skill_page(skill_name: str):
     import streamlit as st
     from pathlib import Path
+    from context.loader import load_skill
 
-    skills_root = Path("context/skills")
-    skill_file = None
-    for md_file in skills_root.rglob(f"{skill_name}.md"):
-        skill_file = md_file
-        break
-
-    if not skill_file:
+    skill = load_skill(skill_name)
+    if not skill:
         st.error(f"Skill '{skill_name}' 未找到")
         if st.button("↩️ 返回"):
             st.query_params.clear()
             st.rerun()
         return
 
-    content = skill_file.read_text(encoding="utf-8")
-    first_line = content.split("\n")[0].lstrip("# ").strip()
-    parent_dir = skill_file.parent.name
+    content = skill.get("content", "")
+    parent_dir = Path(skill.get("path", "")).parent.name
 
-    st.header(f"📋 {first_line}")
+    st.header(f"📋 {skill.get('name', skill_name)}")
     badge = "🔧 通用" if parent_dir == "common" else f"🎮 {parent_dir}"
-    st.caption(f"{badge} | Skill: {skill_name}")
+    st.caption(f"{badge} | Skill: {skill_name} | Route: {skill.get('route', 'agent_loop')}")
+    if skill.get("description"):
+        st.caption(skill["description"])
 
     user_input = st.text_area("描述你的需求", height=120, key=f"input_{skill_name}")
 

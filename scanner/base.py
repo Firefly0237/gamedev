@@ -27,6 +27,8 @@ class ProjectContext:
     covered_classes: list = field(default_factory=list)
     uncovered_scripts: list = field(default_factory=list)
     test_coverage_ratio: float = 0.0
+    unity_mcp_package_installed: bool = False
+    unity_mcp_package_name: str = ""
 
 
 class BaseScanner(ABC):

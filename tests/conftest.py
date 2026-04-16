@@ -6,6 +6,7 @@ import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,16 +75,36 @@ def mock_llm(monkeypatch):
     """返回可配置的 Mock LLM 工厂。"""
     from tests.fixtures.mock_llm import MockLLMFactory
 
+    def _clear_worker_caches():
+        try:
+            from graphs.orchestrator.workers import art_agent, code_agent, config_agent
+
+            art_agent.get_agent.cache_clear()
+            code_agent.get_agent.cache_clear()
+            config_agent.get_agent.cache_clear()
+        except Exception:
+            pass
+
+    _clear_worker_caches()
     factory = MockLLMFactory()
 
-    def _create_llm_mock(task_type="generation", temperature=None):
-        return factory.get_llm(task_type)
+    def _create_llm_mock(task_type="generation", temperature=None, **kwargs):
+        llm = factory.get_llm(task_type)
+        setattr(
+            llm,
+            "_gamedev_runtime_info",
+            SimpleNamespace(task_type=task_type, provider="mock", model=f"mock-{task_type}"),
+        )
+        return llm
 
     monkeypatch.setattr("agents.llm.create_llm", _create_llm_mock)
     monkeypatch.setattr("graphs.agent_loop.create_llm", _create_llm_mock, raising=False)
     monkeypatch.setattr("graphs.deterministic.create_llm", _create_llm_mock, raising=False)
     monkeypatch.setattr("graphs.supervisor.create_llm", _create_llm_mock, raising=False)
-    return factory
+    monkeypatch.setattr("graphs.orchestrator.supervisor.create_llm", _create_llm_mock, raising=False)
+    monkeypatch.setattr("graphs.orchestrator.workers._base.create_llm", _create_llm_mock, raising=False)
+    yield factory
+    _clear_worker_caches()
 
 
 def pytest_collection_modifyitems(config, items):

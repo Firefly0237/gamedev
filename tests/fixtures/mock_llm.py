@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.runnables.base import Runnable
 
 
 class FakeToolCall:
@@ -17,16 +18,18 @@ class FakeToolCall:
         return {"name": self.name, "args": self.args, "id": self.id}[key]
 
 
-class FakeLLMResponse:
+class FakeLLMResponse(AIMessage):
     """模拟 AIMessage 返回值。"""
 
     def __init__(self, content: str = "", tool_calls: list | None = None):
-        self.content = content
-        self.tool_calls = tool_calls or []
-        self.response_metadata = {"token_usage": {"total_tokens": 100}}
+        super().__init__(
+            content=content,
+            tool_calls=tool_calls or [],
+            response_metadata={"token_usage": {"total_tokens": 100}},
+        )
 
 
-class MockLLM:
+class MockLLM(Runnable):
     """可预设响应序列的简单假 LLM。"""
 
     def __init__(self, task_type: str = "generation"):
@@ -35,14 +38,14 @@ class MockLLM:
         self._bound_tools: list = []
         self._invocations: list = []
 
-    def bind_tools(self, tools):
+    def bind_tools(self, tools, *args, **kwargs):
         self._bound_tools = tools
         return self
 
     def set_responses(self, responses: list):
         self._responses = list(responses)
 
-    def invoke(self, messages: list[BaseMessage]) -> FakeLLMResponse:
+    def invoke(self, messages: list[BaseMessage], *args, **kwargs) -> FakeLLMResponse:
         self._invocations.append(messages)
 
         if not self._responses:
@@ -59,6 +62,14 @@ class MockLLM:
                 tool_calls=response.get("tool_calls", []),
             )
         return response
+
+    def stream(self, messages: list[BaseMessage], *args, **kwargs):
+        response = self.invoke(messages, *args, **kwargs)
+        yield AIMessageChunk(
+            content=response.content,
+            tool_calls=getattr(response, "tool_calls", []),
+            response_metadata=getattr(response, "response_metadata", {}),
+        )
 
 
 class MockLLMFactory:

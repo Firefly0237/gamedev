@@ -1,0 +1,6 @@
+skill_id: translate
+name: 本地化翻译
+description: 处理本地化文本和多语言资源翻译。
+trigger_text: 翻译、本地化、多语言、localization
+not_for: 代码重构
+route: agent_loop

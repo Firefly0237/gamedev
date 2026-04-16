@@ -1,13 +1,21 @@
 import difflib
+import json
 import os
 import re
 from pathlib import Path
 
 from config.logger import logger
+from graphs.local_tools import LOCAL_TOOL_NAMES, execute_local_tool
 from mcp_tools.mcp_client import call_mcp_tool, get_project_path, is_mcp_connected
+from mcp_tools.unity_coplay import (
+    is_engine_tool_available,
+    run_engine_compile,
+    run_engine_get_logs,
+    run_engine_tests,
+)
 
 # 注意：以 "engine_" 开头的工具名会在 mcp_client.call_tool 中自动翻译为引擎特定工具名。
-# Supervisor 的 VERIFY 阶段会调用 validate_csharp_basic 对每个生成的文件做语法检查。
+# Orchestrator 的 VERIFY 阶段会调用 validate_csharp_basic 对每个生成的文件做语法检查。
 
 def normalize_path(path: str, project_path: str = "") -> str:
     """路径归一化：相对路径拼接项目根目录"""
@@ -99,6 +107,82 @@ def execute_tool_safely(tool_name: str, arguments: dict, project_path: str = "")
         project_path = get_project_path()
 
     safe_args = dict(arguments or {})
+
+    if tool_name in LOCAL_TOOL_NAMES:
+        try:
+            return execute_local_tool(tool_name, safe_args, project_path)
+        except Exception as exc:
+            return f"工具调用失败 [{tool_name}]: {exc}"
+
+    if tool_name == "engine_compile":
+        available = set()
+        try:
+            from mcp_tools.mcp_client import get_all_mcp_tools
+
+            available = set(get_all_mcp_tools())
+        except Exception:
+            available = set()
+
+        if not is_engine_tool_available(tool_name, available):
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "ENGINE_UNAVAILABLE",
+                    "message": "Unity MCP 未连接，engine_compile 不可用。请安装 Coplay 包并确保 Unity Editor 已连接。",
+                },
+                ensure_ascii=False,
+            )
+
+        files = safe_args.get("files") or []
+        result = run_engine_compile(call_mcp_tool, files, project_path=project_path)
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    if tool_name == "engine_run_tests":
+        available = set()
+        try:
+            from mcp_tools.mcp_client import get_all_mcp_tools
+
+            available = set(get_all_mcp_tools())
+        except Exception:
+            available = set()
+
+        if not is_engine_tool_available(tool_name, available):
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "ENGINE_UNAVAILABLE",
+                    "message": "Unity MCP 未连接，engine_run_tests 不可用。请安装 Coplay 包并确保 Unity Editor 已连接。",
+                },
+                ensure_ascii=False,
+            )
+
+        result = run_engine_tests(
+            call_mcp_tool,
+            mode=safe_args.get("mode", "EditMode"),
+            test_filter=str(safe_args.get("test_filter", "") or ""),
+        )
+        return json.dumps(result, ensure_ascii=False, indent=2)
+
+    if tool_name == "engine_get_logs":
+        available = set()
+        try:
+            from mcp_tools.mcp_client import get_all_mcp_tools
+
+            available = set(get_all_mcp_tools())
+        except Exception:
+            available = set()
+
+        if not is_engine_tool_available(tool_name, available):
+            return json.dumps(
+                {
+                    "status": "error",
+                    "error_code": "ENGINE_UNAVAILABLE",
+                    "message": "Unity MCP 未连接，engine_get_logs 不可用。请安装 Coplay 包并确保 Unity Editor 已连接。",
+                },
+                ensure_ascii=False,
+            )
+
+        return run_engine_get_logs(call_mcp_tool, lines=int(safe_args.get("lines", 100)))
 
     path_tools = ("read_file", "write_file", "list_directory", "search_files", "move_file")
     if tool_name in path_tools and "path" in safe_args:

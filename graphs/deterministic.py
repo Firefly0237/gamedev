@@ -4,7 +4,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agents.llm import create_llm
+from agents.llm import create_llm, get_llm_runtime_info
 from config.logger import logger
 from config.settings import Settings
 from context.loader import build_system_prompt, extract_focus_class
@@ -13,6 +13,18 @@ from graphs.safety import normalize_path, safe_write_file
 from mcp_tools.mcp_client import call_mcp_tool, get_project_path
 from schemas.contracts import empty_result
 from schemas.outputs import CodeModifyPlan, ConfigBatchPlan, ConfigModifyPlan, try_parse
+
+
+def _single_model_usage(task_type: str, llm_info, tokens: int) -> list[dict]:
+    return [
+        {
+            "role": "deterministic",
+            "task_type": task_type,
+            "provider": llm_info.provider if llm_info else "",
+            "model": llm_info.model if llm_info else "",
+            "tokens": tokens,
+        }
+    ]
 
 
 def _extract_total_tokens(response) -> int:
@@ -65,7 +77,8 @@ def run_config_modify(user_input: str, skill: dict, schema: dict, project_contex
 
     focus = extract_focus_class(user_input, project_context or {})
     system = build_system_prompt(skill, schema, project_context, focus_class=focus)
-    llm = create_llm(task_type="generation", temperature=0.1)
+    llm = create_llm(task_type="intent_parse", temperature=0.1)
+    llm_info = get_llm_runtime_info(llm)
     total_tokens = 0
 
     plan = None
@@ -97,7 +110,15 @@ def run_config_modify(user_input: str, skill: dict, schema: dict, project_contex
 
     if not plan:
         duration = time.time() - t0
-        db.log_task_end(task_id, "failed", total_tokens, duration, last_error)
+        db.log_task_end(
+            task_id,
+            "failed",
+            total_tokens,
+            duration,
+            last_error,
+            provider=llm_info.provider if llm_info else "",
+            model=llm_info.model if llm_info else "",
+        )
         result = empty_result(route="deterministic", task_id=task_id)
         result["status"] = "failed"
         result["error"] = f"解析失败（{Settings.MAX_RETRIES}次）: {last_error}"
@@ -178,8 +199,6 @@ def run_config_modify(user_input: str, skill: dict, schema: dict, project_contex
             display += f"❌ {result.get('file', '?')}: {result.get('error', '未知错误')}\n"
 
     duration = time.time() - t0
-    db.log_task_end(task_id, status, total_tokens, duration)
-
     result = empty_result(route="deterministic", task_id=task_id)
     result["status"] = status
     result["display"] = display
@@ -188,9 +207,19 @@ def run_config_modify(user_input: str, skill: dict, schema: dict, project_contex
     result["actions"] = results
     result["tokens"] = total_tokens
     result["duration"] = duration
+    result["model_usage"] = _single_model_usage("intent_parse", llm_info, total_tokens)
     if status == "failed":
         failures = [item.get("error", "") for item in results if item.get("error")]
         result["error"] = failures[0] if failures else "配置修改失败"
+    db.log_task_end(
+        task_id,
+        status,
+        total_tokens,
+        duration,
+        result["error"],
+        provider=llm_info.provider if llm_info else "",
+        model=llm_info.model if llm_info else "",
+    )
     return result
 
 
@@ -201,7 +230,8 @@ def run_config_batch(user_input: str, skill: dict, schema: dict, project_context
 
     focus = extract_focus_class(user_input, project_context or {})
     system = build_system_prompt(skill, schema, project_context, focus_class=focus)
-    llm = create_llm(task_type="generation", temperature=0.1)
+    llm = create_llm(task_type="intent_parse", temperature=0.1)
+    llm_info = get_llm_runtime_info(llm)
     total_tokens = 0
 
     plan = None
@@ -233,7 +263,15 @@ def run_config_batch(user_input: str, skill: dict, schema: dict, project_context
 
     if not plan:
         duration = time.time() - t0
-        db.log_task_end(task_id, "failed", total_tokens, duration, last_error)
+        db.log_task_end(
+            task_id,
+            "failed",
+            total_tokens,
+            duration,
+            last_error,
+            provider=llm_info.provider if llm_info else "",
+            model=llm_info.model if llm_info else "",
+        )
         result = empty_result(route="deterministic", task_id=task_id)
         result["status"] = "failed"
         result["error"] = f"批量修改解析失败: {last_error}"
@@ -353,7 +391,6 @@ def run_config_batch(user_input: str, skill: dict, schema: dict, project_context
             display += f"- ❌ {change.get('file', '?')}: {change.get('error', '')}\n"
 
     duration = time.time() - t0
-    db.log_task_end(task_id, status, total_tokens, duration)
 
     result = empty_result(route="deterministic", task_id=task_id)
     result["status"] = status
@@ -363,9 +400,19 @@ def run_config_batch(user_input: str, skill: dict, schema: dict, project_context
     result["actions"] = all_changes
     result["tokens"] = total_tokens
     result["duration"] = duration
+    result["model_usage"] = _single_model_usage("intent_parse", llm_info, total_tokens)
     if status == "failed":
         failures = [item.get("error", "") for item in all_changes if item.get("error")]
         result["error"] = failures[0] if failures else "批量配置修改失败"
+    db.log_task_end(
+        task_id,
+        status,
+        total_tokens,
+        duration,
+        result["error"],
+        provider=llm_info.provider if llm_info else "",
+        model=llm_info.model if llm_info else "",
+    )
     return result
 
 
@@ -375,7 +422,8 @@ def run_code_modify(user_input: str, skill: dict, schema: dict, project_context:
     task_id = db.log_task_start("modify_code", user_input[:200])
 
     system = _build_code_modify_system(user_input, skill, schema, project_context)
-    llm = create_llm(task_type="generation", temperature=0.1)
+    llm = create_llm(task_type="intent_parse", temperature=0.1)
+    llm_info = get_llm_runtime_info(llm)
     total_tokens = 0
 
     plan = None
@@ -402,7 +450,15 @@ def run_code_modify(user_input: str, skill: dict, schema: dict, project_context:
 
     if not plan:
         duration = time.time() - t0
-        db.log_task_end(task_id, "failed", total_tokens, duration, last_error)
+        db.log_task_end(
+            task_id,
+            "failed",
+            total_tokens,
+            duration,
+            last_error,
+            provider=llm_info.provider if llm_info else "",
+            model=llm_info.model if llm_info else "",
+        )
         result = empty_result(route="deterministic", task_id=task_id)
         result["status"] = "failed"
         result["error"] = f"解析失败（{Settings.MAX_RETRIES}次）: {last_error}"
@@ -467,6 +523,7 @@ def run_code_modify(user_input: str, skill: dict, schema: dict, project_context:
     result["actions"] = results
     result["tokens"] = total_tokens
     result["duration"] = time.time() - t0
+    result["model_usage"] = _single_model_usage("intent_parse", llm_info, total_tokens)
 
     cs_files = [file_path for file_path in output_files if file_path.endswith(".cs")]
     if cs_files and status in ("success", "partial"):
@@ -494,5 +551,13 @@ def run_code_modify(user_input: str, skill: dict, schema: dict, project_context:
         failures = [item.get("error", "") for item in results if item.get("error")]
         result["error"] = failures[0] if failures else "代码修改失败"
 
-    db.log_task_end(task_id, result["status"], result["tokens"], result["duration"], result["error"])
+    db.log_task_end(
+        task_id,
+        result["status"],
+        result["tokens"],
+        result["duration"],
+        result["error"],
+        provider=llm_info.provider if llm_info else "",
+        model=llm_info.model if llm_info else "",
+    )
     return result

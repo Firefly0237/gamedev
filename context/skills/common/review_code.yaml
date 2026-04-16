@@ -1,0 +1,6 @@
+skill_id: review_code
+name: 代码审查
+description: 审查脚本质量、风险和性能问题，输出结构化审查结果。
+trigger_text: 审查、检查、review、代码质量
+not_for: 直接改文件
+route: agent_loop

@@ -1,0 +1,6 @@
+skill_id: validate_config
+name: 配置校验
+description: 校验项目中的配置文件格式和常见问题。
+trigger_text: 校验配置、检查配置、validate config
+not_for: 直接修改配置
+route: agent_loop

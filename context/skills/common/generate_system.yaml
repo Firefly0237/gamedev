@@ -1,0 +1,7 @@
+skill_id: generate_system
+name: 实现游戏系统
+description: 处理多文件、多步骤的系统实现任务，生成数据类、配置、逻辑和测试。
+trigger_text: 实现、创建、做一个新系统或功能
+not_for: 修改已有代码、审查代码
+route: orchestrator
+route_agent_hint: code_agent

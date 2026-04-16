@@ -1,5 +1,6 @@
 import re
 from collections import defaultdict
+from pathlib import Path
 
 from config.logger import logger
 
@@ -253,3 +254,49 @@ def get_impact_scope(class_name: str, reverse_graph: dict, depth: int = 2) -> li
         current_level = next_level
 
     return impact
+
+
+def parse_meta_file(project_path: str, relative_path: str) -> dict:
+    project_root = Path(project_path).resolve()
+    meta_rel = relative_path if relative_path.endswith(".meta") else f"{relative_path}.meta"
+    path = (project_root / meta_rel).resolve()
+
+    try:
+        path.relative_to(project_root)
+    except ValueError:
+        return {"success": False, "message": f"路径越界: {relative_path}"}
+
+    if not path.exists():
+        return {"success": False, "message": f"未找到 meta 文件: {meta_rel}"}
+
+    content = path.read_text(encoding="utf-8", errors="ignore")
+    guid_match = re.search(r"guid:\s*([a-f0-9]+)", content)
+    importer_match = re.search(r"^([A-Za-z]+Importer):", content, re.MULTILINE)
+    return {
+        "success": True,
+        "path": str(path.relative_to(project_root)).replace("\\", "/"),
+        "guid": guid_match.group(1) if guid_match else "",
+        "importer": importer_match.group(1) if importer_match else "",
+    }
+
+
+def find_guid_references(project_path: str, guid: str, limit: int = 30) -> list[str]:
+    project_root = Path(project_path).resolve()
+    exts = {".meta", ".asset", ".prefab", ".unity", ".mat", ".controller", ".anim"}
+    results: list[str] = []
+
+    for path in project_root.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in exts:
+            continue
+        if any(part in {"Library", "Temp", "Packages", "obj", ".git"} for part in path.parts):
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if guid in content:
+            results.append(str(path.relative_to(project_root)).replace("\\", "/"))
+            if len(results) >= limit:
+                break
+
+    return results

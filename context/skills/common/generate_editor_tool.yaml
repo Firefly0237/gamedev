@@ -1,0 +1,6 @@
+skill_id: generate_editor_tool
+name: 生成 Editor 工具
+description: 生成 Unity Editor 扩展、窗口和 Inspector 工具代码。
+trigger_text: 编辑器工具、自定义窗口、inspector
+not_for: 普通运行时代码修改
+route: agent_loop

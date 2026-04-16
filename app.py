@@ -1,4 +1,4 @@
-from pathlib import Path
+import json
 
 import streamlit as st
 
@@ -16,16 +16,8 @@ def _init_session_state() -> None:
     st.session_state.setdefault("example_input", "")
     st.session_state.setdefault("script_list", [])
     st.session_state.setdefault("config_list", [])
-
-
-def _read_skill_title(md_path: Path) -> str:
-    try:
-        content = md_path.read_text(encoding="utf-8")
-    except OSError:
-        return md_path.stem
-
-    first_line = content.splitlines()[0] if content else md_path.stem
-    return first_line.lstrip("# ").strip() or md_path.stem
+    st.session_state.setdefault("pending_plan", None)
+    st.session_state.setdefault("restored_task", None)
 
 
 def _set_query_param(key: str, value: str) -> None:
@@ -33,12 +25,21 @@ def _set_query_param(key: str, value: str) -> None:
     st.rerun()
 
 
+def _normalize_route(route: str) -> str:
+    return "orchestrator" if route == "supervisor" else route
+
+
 def _build_actual_stages(result: dict) -> list[str]:
     """根据执行结果构造实际阶段摘要。"""
     lines = []
-    route = result.get("route", "")
+    route = _normalize_route(result.get("route", ""))
 
-    if route == "supervisor":
+    if result.get("status") == "awaiting_approval":
+        lines.append(f"📋 已生成 {len(result.get('actions', []))} 步执行计划")
+        lines.append("✋ 等待你确认后再真正改文件")
+        return lines
+
+    if route == "orchestrator":
         actions = result.get("actions", [])
         if actions:
             lines.append(f"📋 拆解为 {len(actions)} 个子任务")
@@ -66,27 +67,106 @@ def _build_actual_stages(result: dict) -> list[str]:
     return lines
 
 
-def _render_skill_buttons(skill_dir: Path, fallback: list[tuple[str, str]]) -> None:
-    if skill_dir.exists():
-        md_files = sorted(skill_dir.glob("*.md"))
-    else:
-        md_files = []
+def _render_pending_plan() -> None:
+    handle = st.session_state.get("pending_plan")
+    if not handle:
+        return
 
-    if md_files:
-        for md_file in md_files:
-            skill_name = md_file.stem
-            label = _read_skill_title(md_file)
-            if st.button(label, use_container_width=True, key=f"skill_{skill_name}"):
+    from graphs.orchestrator import resume_orchestrator
+    from pages._task_card import render_task_card
+
+    plan_actions = handle.get("actions", [])
+    thread_id = handle.get("thread_id", "pending")
+
+    st.info("📋 多文件任务已生成计划。确认后才会真正执行并修改文件。")
+    with st.expander(f"📋 执行计划（{len(plan_actions)} 步，等待确认）", expanded=True):
+        for action in plan_actions:
+            files = action.get("files", [])
+            st.markdown(f"- **Step {action.get('step_id', '?')}**: {action.get('description', '')}")
+            if files:
+                st.caption(f"文件: {', '.join(files)}")
+
+        col1, col2 = st.columns(2)
+        if col1.button("✅ 执行计划", use_container_width=True, key=f"approve_{thread_id}"):
+            with st.chat_message("assistant"):
+                stream_box = st.empty()
+                chunks: list[str] = []
+
+                def on_chunk(text: str):
+                    chunks.append(text)
+                    stream_box.markdown("".join(chunks) + "▌")
+
+                with st.status("🔨 按计划执行中...", expanded=True) as status:
+                    result = resume_orchestrator(handle, approved=True, stream_callback=on_chunk)
+                    for stage_text in _build_actual_stages(result):
+                        status.write(stage_text)
+                    if result["status"] == "success":
+                        status.update(label="✅ 完成", state="complete")
+                    elif result["status"] == "partial":
+                        status.update(label="⚠️ 部分完成", state="error")
+                    else:
+                        status.update(label="❌ 失败", state="error")
+
+                if chunks:
+                    stream_box.markdown("".join(chunks))
+                render_task_card(result)
+                response = result.get("summary") or result.get("display", "")[:200]
+                st.session_state.chat_history.append({"role": "assistant", "content": response})
+
+            st.session_state["pending_plan"] = None
+
+        if col2.button("❌ 取消", use_container_width=True, key=f"cancel_{thread_id}"):
+            result = resume_orchestrator(handle, approved=False)
+            st.session_state["pending_plan"] = None
+            st.session_state.chat_history.append({"role": "assistant", "content": result.get("display", "已取消")})
+            st.info("已取消。你可以修改需求后重新发起。")
+
+
+def _render_restored_task() -> None:
+    restored = st.session_state.get("restored_task")
+    if not restored:
+        return
+
+    from pages._task_card import render_task_card
+
+    st.info("📜 这是从执行历史恢复的任务结果。")
+    render_task_card(restored)
+    if st.button("关闭历史任务视图", use_container_width=False, key="close_restored_task"):
+        st.session_state["restored_task"] = None
+        st.rerun()
+
+
+def _list_skill_options(skill_genre: str) -> list[tuple[str, str]]:
+    from context.loader import list_skills, load_skill
+
+    options = []
+    for skill_name in list_skills(skill_genre):
+        skill = load_skill(skill_name)
+        if not skill:
+            continue
+        options.append((skill_name, skill.get("name", skill_name)))
+    return options
+
+
+def _render_skill_buttons(skill_genre: str, fallback: list[tuple[str, str]]) -> None:
+    options = _list_skill_options(skill_genre)
+    if options:
+        for skill_name, label in options:
+            if st.button(label, use_container_width=True, key=f"skill_{skill_genre}_{skill_name}"):
                 _set_query_param("skill", skill_name)
-    else:
-        for skill_name, label in fallback:
-            if st.button(label, use_container_width=True, key=f"fallback_{skill_name}"):
-                _set_query_param("skill", skill_name)
+        return
+
+    for skill_name, label in fallback:
+        if st.button(label, use_container_width=True, key=f"fallback_{skill_genre}_{skill_name}"):
+            _set_query_param("skill", skill_name)
 
 
 def render_chat() -> None:
     for msg in st.session_state.chat_history:
         st.chat_message(msg["role"]).write(msg["content"])
+
+    _render_pending_plan()
+    _render_restored_task()
 
     if not st.session_state.chat_history and not st.session_state.project_scanned:
         st.markdown("### 💬 有什么可以帮你？")
@@ -102,12 +182,13 @@ def render_chat() -> None:
             if col.button(example, use_container_width=True, key=f"example_{example}"):
                 st.session_state.example_input = example
 
-    user_input = st.chat_input("输入你的需求...")
+    user_input = st.chat_input("输入你的需求...", disabled=bool(st.session_state.get("pending_plan")))
     if not user_input and st.session_state.example_input:
         user_input = st.session_state.example_input
         st.session_state.example_input = ""
 
     if user_input:
+        rerun_for_pending_plan = False
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         st.chat_message("user").write(user_input)
 
@@ -134,24 +215,44 @@ def render_chat() -> None:
                     if stages:
                         status.write(f"{stages[0][1]} {stages[0][2]}")
 
-                    result = run_with_router(user_input)
+                    stream_box = st.empty()
+                    chunks: list[str] = []
+
+                    def on_chunk(text: str):
+                        chunks.append(text)
+                        stream_box.markdown("".join(chunks) + "▌")
+
+                    result = run_with_router(user_input, stream_callback=on_chunk)
 
                     actual_stages = _build_actual_stages(result)
                     for stage_text in actual_stages:
                         status.write(stage_text)
 
-                    if result["status"] == "success":
+                    if result["status"] == "awaiting_approval":
+                        status.update(label="✋ 等待确认", state="complete")
+                    elif result["status"] == "success":
                         status.update(label="✅ 完成", state="complete")
                     elif result["status"] == "partial":
                         status.update(label="⚠️ 部分完成", state="error")
                     else:
                         status.update(label="❌ 失败", state="error")
 
-                # [后续8] 原展示代码已被 render_task_card 替换，如需回滚参考 git 历史
-                render_task_card(result)
-                response = result.get("summary") or result.get("display", "")[:200]
+                if chunks:
+                    stream_box.markdown("".join(chunks))
+
+                if result["status"] == "awaiting_approval":
+                    st.session_state["pending_plan"] = result
+                    response = f"已生成执行计划：{result.get('summary', '')}。请先确认。"
+                    st.info(response)
+                    rerun_for_pending_plan = True
+                else:
+                    # [后续8] 原展示代码已被 render_task_card 替换，如需回滚参考 git 历史
+                    render_task_card(result)
+                    response = result.get("summary") or result.get("display", "")[:200]
 
         st.session_state.chat_history.append({"role": "assistant", "content": response})
+        if rerun_for_pending_plan:
+            st.rerun()
 
 
 def main() -> None:
@@ -233,7 +334,7 @@ def main() -> None:
             else:
                 st.caption("📊 测试覆盖: 暂无可测试脚本")
 
-            from mcp_tools.mcp_client import get_mcp_status
+            from mcp_tools.mcp_client import get_mcp_status, get_unity_status
 
             try:
                 mcp_status = get_mcp_status()
@@ -244,32 +345,45 @@ def main() -> None:
                     st.caption("MCP: 🔴")
             except Exception:
                 st.caption("MCP: 🔴")
+            unity_status = get_unity_status()
+            if unity_status.get("connected"):
+                tool_count = len(unity_status.get("tool_names", []))
+                st.caption(f"Unity MCP: Coplay ✅ ({tool_count} tools)")
+            elif ctx_dict.get("unity_mcp_package_installed"):
+                reason = unity_status.get("reason") or "请确认 Unity Editor 已打开 MCP for Unity 并允许连接"
+                st.caption(f"Unity MCP: Coplay ⚠️ 未连接 ({reason})")
+            else:
+                st.caption("Unity MCP: Coplay 未安装，编译/测试验证已降级为语法检查")
 
-            if not Settings.is_unity_available():
-                st.caption("⚠️ Unity 未配置：编译/测试验证已降级为语法检查")
-                with st.expander("如何配置 Unity"):
+            if not unity_status.get("connected"):
+                with st.expander("如何启用 Unity 编译/测试"):
                     st.markdown(
                         """
-1. 安装 Unity（任意版本）
-2. 在 .env 中设置 UNITY_EXECUTABLE_PATH，例如：
+1. 在 Unity 项目中安装 CoplayDev 包：
+   `https://github.com/CoplayDev/unity-mcp.git?path=/MCPForUnity#main`
+2. 打开 `Window > MCP for Unity`
+3. 启动 MCP Server，并确认显示已连接
+4. 在 GameDev 所在环境安装 `uv`，以便通过 `uvx` 启动 Coplay stdio server
 
-```env
-# Windows
-UNITY_EXECUTABLE_PATH=C:/Program Files/Unity/Hub/Editor/2022.3.10f1/Editor/Unity.exe
-
-# macOS
-UNITY_EXECUTABLE_PATH=/Applications/Unity/Hub/Editor/2022.3.10f1/Unity.app/Contents/MacOS/Unity
-```
-
-3. 重启 GameDev
+可选：
+- 如果要更严格的脚本校验，可在 Unity 中按 Coplay 文档安装 Roslyn 依赖
+- 如果只做代码审查而不做编译/测试，当前降级行为是正常的
                         """
                     )
             st.divider()
 
             st.subheader("📌 推荐操作")
-            if st.session_state.recommended_skills:
-                for rec in st.session_state.recommended_skills:
-                    if st.button(rec["label"], use_container_width=True, key=f"rec_{rec['skill']}"):
+            from database.db import db
+            from pages._disclosure import compute_dynamic_recommendations
+
+            dynamic_recs = compute_dynamic_recommendations(
+                project_context=ctx_dict,
+                chat_history=st.session_state.get("chat_history", []),
+                task_logs=db.get_recent_tasks(10),
+            )
+            if dynamic_recs:
+                for rec in dynamic_recs:
+                    if st.button(rec["label"], use_container_width=True, key=f"rec_{rec['skill']}_{rec['weight']}"):
                         _set_query_param("skill", rec["skill"])
                     st.caption(rec["reason"])
             else:
@@ -299,12 +413,12 @@ UNITY_EXECUTABLE_PATH=/Applications/Unity/Hub/Editor/2022.3.10f1/Unity.app/Conte
                 ("analyze_perf", "性能分析"),
                 ("summarize_requirement", "需求拆解"),
             ]
-            _render_skill_buttons(Path("context/skills/common"), common_fallback)
+            _render_skill_buttons("common", common_fallback)
 
             detected_genre = st.session_state.detected_genre
             if detected_genre != "unknown":
                 st.subheader(f"🎮 {detected_genre} 专用")
-                _render_skill_buttons(Path("context/skills") / detected_genre, [])
+                _render_skill_buttons(detected_genre, [])
 
         if st.button("📜 Git", use_container_width=True, key="git_panel_btn"):
             _set_query_param("view", "git")
@@ -316,7 +430,14 @@ UNITY_EXECUTABLE_PATH=/Applications/Unity/Hub/Editor/2022.3.10f1/Unity.app/Conte
             if tasks:
                 for task in tasks:
                     emoji = {"success": "✅", "failed": "❌", "running": "⏳"}.get(task["status"], "❓")
-                    st.text(f"{emoji} [{task['pipeline_type']}] {task['created_at'][:16]}")
+                    label = f"{emoji} [{task['pipeline_type']}] {task['created_at'][:16]}"
+                    if st.button(label, use_container_width=True, key=f"task_{task['id']}"):
+                        payload = task.get("result_json") or ""
+                        if payload:
+                            st.session_state["restored_task"] = json.loads(payload)
+                            st.rerun()
+                        else:
+                            st.warning("这条历史记录没有保存完整结果快照。")
                 stats = db.get_task_stats()
                 st.caption(f"总计 {stats['total']} 次 | Token {stats['total_tokens']:,}")
             else:

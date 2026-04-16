@@ -30,8 +30,11 @@ class Database:
                 user_input TEXT DEFAULT '',
                 status TEXT DEFAULT 'running',
                 token_count INTEGER DEFAULT 0,
+                provider TEXT DEFAULT '',
+                model TEXT DEFAULT '',
                 duration REAL DEFAULT 0,
                 error_message TEXT DEFAULT '',
+                result_json TEXT DEFAULT '',
                 created_at TEXT DEFAULT (datetime('now','localtime')),
                 completed_at TEXT
             )
@@ -60,6 +63,18 @@ class Database:
             )
             """
         )
+        self._ensure_column("task_logs", "result_json", "TEXT DEFAULT ''")
+        self._ensure_column("task_logs", "provider", "TEXT DEFAULT ''")
+        self._ensure_column("task_logs", "model", "TEXT DEFAULT ''")
+        conn.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str):
+        conn = self._get_conn()
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        existing = {row["name"] if isinstance(row, sqlite3.Row) else row[1] for row in rows}
+        if column in existing:
+            return
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         conn.commit()
 
     def log_task_start(self, pipeline_type: str, user_input: str) -> int:
@@ -81,6 +96,9 @@ class Database:
         token_count: int = 0,
         duration: float = 0,
         error_message: str = "",
+        result_json: str = "",
+        provider: str = "",
+        model: str = "",
     ):
         conn = self._get_conn()
         conn.execute(
@@ -88,15 +106,40 @@ class Database:
             UPDATE task_logs
             SET status = ?,
                 token_count = ?,
+                provider = CASE WHEN ? != '' THEN ? ELSE provider END,
+                model = CASE WHEN ? != '' THEN ? ELSE model END,
                 duration = ?,
                 error_message = ?,
+                result_json = CASE WHEN ? != '' THEN ? ELSE result_json END,
                 completed_at = datetime('now','localtime')
             WHERE id = ?
             """,
-            (status, token_count, duration, error_message, task_id),
+            (
+                status,
+                token_count,
+                provider,
+                provider,
+                model,
+                model,
+                duration,
+                error_message,
+                result_json,
+                result_json,
+                task_id,
+            ),
         )
         conn.commit()
         logger.debug(f"Task end: {task_id} [{status}]")
+
+    def save_task_result(self, task_id: int | None, result: dict):
+        if not task_id:
+            return
+        conn = self._get_conn()
+        conn.execute(
+            "UPDATE task_logs SET result_json = ? WHERE id = ?",
+            (json.dumps(result, ensure_ascii=False), task_id),
+        )
+        conn.commit()
 
     def save_project_context(self, project_path: str, context: dict, total_scripts: int = 0):
         conn = self._get_conn()

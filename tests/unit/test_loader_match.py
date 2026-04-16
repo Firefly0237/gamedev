@@ -35,6 +35,11 @@ class TestLoaderMatch:
         assert skill is not None
         assert skill["skill_id"] == "generate_test"
 
+    def test_load_skill_route_from_yaml(self):
+        skill = load_skill("generate_system")
+        assert skill is not None
+        assert skill["route"] == "orchestrator"
+
     def test_extract_focus_class(self, scanned_context):
         assert extract_focus_class("审查 PlayerController 的性能问题", scanned_context) == "PlayerController"
 

@@ -1,7 +1,7 @@
 """统一的任务卡片渲染组件。
 
 支持三种展示类型：
-- step_card: 从 actions 渲染结构化步骤（deterministic/supervisor）
+- step_card: 从 actions 渲染结构化步骤（deterministic/orchestrator）
 - content_card: 直接展示 display markdown（agent_loop）
 - simple_card: 失败或空结果的简化展示
 
@@ -13,18 +13,22 @@ from typing import Any
 import streamlit as st
 
 
+def _normalize_route(route: str) -> str:
+    return "orchestrator" if route == "supervisor" else route
+
+
 def render_task_card(result: dict, container=None):
     """渲染任务卡片。"""
     target = container or st
 
-    route = result.get("route", "")
+    route = _normalize_route(result.get("route", ""))
     status = result.get("status", "failed")
 
     if status == "failed" and not result.get("output_files") and not result.get("actions"):
         _render_simple_card(result, target)
         return
 
-    if route in ("deterministic", "supervisor"):
+    if route in ("deterministic", "orchestrator"):
         _render_step_card(result, target)
     else:
         _render_content_card(result, target)
@@ -39,10 +43,11 @@ def _status_icon(status: str) -> str:
 
 
 def _route_badge(route: str) -> str:
+    route = _normalize_route(route)
     return {
         "deterministic": "🔧 确定性",
         "agent_loop": "🤖 Agent",
-        "supervisor": "🎯 Supervisor",
+        "orchestrator": "🧭 Orchestrator",
         "none": "❓",
     }.get(route, route)
 
@@ -67,6 +72,10 @@ def _render_card_header(result: dict, target):
     badge_cols[0].caption(_route_badge(result.get("route", "")))
     badge_cols[1].caption(_verification_badge(result.get("verification", {})))
     badge_cols[2].caption(f"⏱ {result.get('duration', 0):.1f}s")
+
+    output_files = result.get("output_files", [])
+    if output_files:
+        target.caption(f"📁 生成 {len(output_files)} 个文件")
 
 
 def _render_card_footer(result: dict, target):
@@ -135,17 +144,19 @@ def _render_step_card(result: dict, target):
     _render_card_header(result, target)
 
     actions = result.get("actions", [])
-    if not actions:
-        if result.get("display"):
-            target.markdown(result["display"][:2000])
-        _render_card_footer(result, target)
-        return
-
     route = result.get("route", "")
-    if route == "supervisor":
-        _render_supervisor_steps(actions, result, target)
-    else:
-        _render_deterministic_actions(actions, result, target)
+
+    if result.get("display"):
+        with target.expander("📋 执行详情", expanded=False):
+            target.markdown(result["display"][:4000])
+
+    if actions:
+        title = "📝 计划步骤" if route == "orchestrator" else "🧩 修改详情"
+        with target.expander(f"{title} ({len(actions)} 项)", expanded=False):
+            if route == "orchestrator":
+                _render_orchestrator_steps(actions, result, target)
+            else:
+                _render_deterministic_actions(actions, result, target)
 
     if result.get("error"):
         target.error(f"❌ {result['error'][:300]}")
@@ -153,29 +164,16 @@ def _render_step_card(result: dict, target):
     _render_card_footer(result, target)
 
 
-def _render_supervisor_steps(actions: list, result: dict, target):
-    """Supervisor 的 SubTask 列表展示。"""
-    target.caption(f"📋 执行步骤 ({len(actions)} 个)")
-    initial_visible = 3
-
+def _render_orchestrator_steps(actions: list, result: dict, target):
+    """Orchestrator 的 SubTask 列表展示。"""
     for index, action in enumerate(actions):
         step_id = action.get("step_id", index + 1)
         description = action.get("description", "")
         files = action.get("files", action.get("target_files", []))
-
-        if index < initial_visible:
-            _render_single_supervisor_step(step_id, description, files, target)
-
-    if len(actions) > initial_visible:
-        with target.expander(f"▾ 展开剩余 {len(actions) - initial_visible} 步", expanded=False):
-            for action in actions[initial_visible:]:
-                step_id = action.get("step_id", "?")
-                description = action.get("description", "")
-                files = action.get("files", action.get("target_files", []))
-                _render_single_supervisor_step(step_id, description, files, st)
+        _render_single_orchestrator_step(step_id, description, files, target)
 
 
-def _render_single_supervisor_step(step_id: Any, description: str, files: list, target):
+def _render_single_orchestrator_step(step_id: Any, description: str, files: list, target):
     files_str = f" → {', '.join(files[:2])}" if files else ""
     if len(files) > 2:
         files_str += f" (+{len(files) - 2})"
@@ -188,15 +186,8 @@ def _render_deterministic_actions(actions: list, result: dict, target):
     total = len(actions)
 
     target.caption(f"🔧 修改项 ({success_count}/{total})")
-    initial = 5
-
-    for action in actions[:initial]:
+    for action in actions:
         _render_single_deterministic_action(action, target)
-
-    if total > initial:
-        with target.expander(f"▾ 展开剩余 {total - initial} 项", expanded=False):
-            for action in actions[initial:]:
-                _render_single_deterministic_action(action, st)
 
 
 def _render_single_deterministic_action(action: dict, target):
@@ -229,16 +220,11 @@ def _render_content_card(result: dict, target):
 
     display = result.get("display", "")
     if display:
-        char_limit = 500
-
-        if len(display) <= char_limit:
-            target.markdown(display)
-        else:
-            preview = display[:char_limit]
-            target.markdown(preview + "...")
-
-            with target.expander("▾ 展开完整内容", expanded=False):
-                st.markdown(display)
+        preview = display[:280]
+        target.markdown(preview + ("..." if len(display) > 280 else ""))
+        if len(display) > 280:
+            with target.expander("📋 展开完整内容", expanded=False):
+                target.markdown(display)
     else:
         target.caption("（无输出内容）")
 
@@ -274,7 +260,7 @@ def get_route_stages(route: str) -> list[tuple]:
             (1.5, "🔧", "正在执行修改..."),
             (3.0, "✔️", "正在验证结果..."),
         ]
-    if route == "supervisor":
+    if _normalize_route(route) == "orchestrator":
         return [
             (0.0, "📋", "正在拆解任务..."),
             (5.0, "🎯", "规划完成，开始执行子任务..."),

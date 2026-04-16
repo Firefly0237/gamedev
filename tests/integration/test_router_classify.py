@@ -22,10 +22,10 @@ class TestClassifyIntent:
         assert result["route"] == "agent_loop"
         assert result["skill_id"] == "review_code"
 
-    def test_supervisor_route(self, scanned_context, mcp_initialized):
+    def test_orchestrator_route(self, scanned_context, mcp_initialized):
         _ = mcp_initialized
         result = classify_intent("做一个背包系统", scanned_context)
-        assert result["route"] == "supervisor"
+        assert result["route"] == "orchestrator"
 
     def test_batch_detection(self, scanned_context, mcp_initialized):
         _ = mcp_initialized

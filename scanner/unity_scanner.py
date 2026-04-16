@@ -8,6 +8,7 @@ from config.logger import logger
 from scanner.base import BaseScanner, ProjectContext
 from scanner.coverage import analyze_coverage
 from scanner.reference_graph import build_reference_graph, extract_references
+from scanner.unity_mcp import COPLAY_PACKAGE_NAME, detect_coplay_package
 
 
 SKIP_DIRS = {"Library", "Temp", "Packages", "obj", ".git"}
@@ -88,6 +89,7 @@ class UnityScanner(BaseScanner):
         configs = self._scan_configs()
         shaders = self._scan_shaders()
         localization = self._scan_localization()
+        coplay_status = detect_coplay_package(str(self.project_root))
 
         self._auto_generate_schemas(configs)
         detected_genre = self.detect_genre(scripts)
@@ -111,6 +113,8 @@ class UnityScanner(BaseScanner):
             reverse_graph=reverse_graph,
             class_to_path=class_to_path,
             last_scan_time=scan_start,
+            unity_mcp_package_installed=coplay_status["package_installed"],
+            unity_mcp_package_name=COPLAY_PACKAGE_NAME,
         )
 
         coverage = analyze_coverage(ctx.scripts)

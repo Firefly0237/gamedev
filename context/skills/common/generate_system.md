@@ -23,9 +23,9 @@
 - 逻辑: Assets/Scripts/Systems/{Name}System.cs
 - 测试: Assets/Tests/Editor/{Name}SystemTests.cs
 
-## Supervisor 模式
+## Orchestrator 模式
 
-如果你被调用在 Supervisor 的 PLAN 阶段，输出格式不再是自由文本，
+如果你被调用在 Orchestrator 的 PLAN 阶段，输出格式不再是自由文本，
 而是严格的 SubTaskPlan JSON。系统会自动检测调用阶段并切换格式。
 
 PLAN 阶段时：
@@ -39,7 +39,7 @@ EXECUTE 阶段时：
 - 严格按 description 生成代码并 write_file
 - 不要做 description 之外的事情（如修改其他文件）
 
-## Supervisor 友好的拆解原则
+## Orchestrator 友好的拆解原则
 
 如果你拆解任务，遵循这个顺序：
 1. 数据类（XxxData.cs）

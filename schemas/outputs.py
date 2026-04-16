@@ -86,10 +86,21 @@ class SubTask(BaseModel):
 
 
 class SubTaskPlan(BaseModel):
-    """Supervisor 的执行计划"""
+    """Orchestrator 的执行计划"""
 
     subtasks: list[SubTask] = Field(min_length=1, max_length=8)
     summary: str = Field(min_length=5)
+
+
+class WorkerAgentResult(BaseModel):
+    """单个 Worker 的结构化执行结果。"""
+
+    worker: str = Field(min_length=3)
+    status: Literal["success", "failed"]
+    summary: str = Field(min_length=2)
+    created_files: list[str] = Field(default_factory=list, max_length=5)
+    error_code: str = ""
+    error_details: str = ""
 
 
 def try_parse(text: str, model: type[BaseModel]) -> tuple[BaseModel | None, str]:

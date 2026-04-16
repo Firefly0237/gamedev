@@ -21,7 +21,7 @@ class TestTaskCardHelpers:
     def test_route_badge(self):
         assert "确定性" in task_card._route_badge("deterministic")
         assert "Agent" in task_card._route_badge("agent_loop")
-        assert "Supervisor" in task_card._route_badge("supervisor")
+        assert "Orchestrator" in task_card._route_badge("supervisor")
 
     def test_verification_badge(self):
         assert "未验证" in task_card._verification_badge({})
@@ -30,10 +30,10 @@ class TestTaskCardHelpers:
 
     def test_get_route_stages(self):
         deterministic = task_card.get_route_stages("deterministic")
-        supervisor = task_card.get_route_stages("supervisor")
+        orchestrator = task_card.get_route_stages("supervisor")
         agent_loop = task_card.get_route_stages("agent_loop")
         assert len(deterministic) == 3
-        assert len(supervisor) == 4
+        assert len(orchestrator) == 4
         assert len(agent_loop) == 4
 
 
@@ -47,7 +47,7 @@ class TestTaskCardDispatch:
         task_card.render_task_card({"status": "failed", "route": "agent_loop", "output_files": [], "actions": []}, _DummyTarget())
         assert called == ["simple"]
 
-    def test_supervisor_uses_step_card(self, monkeypatch):
+    def test_legacy_supervisor_route_uses_step_card(self, monkeypatch):
         called = []
         monkeypatch.setattr(task_card, "_render_step_card", lambda result, target: called.append("step"))
         monkeypatch.setattr(task_card, "_render_content_card", lambda result, target: called.append("content"))

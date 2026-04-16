@@ -1,7 +1,7 @@
 from typing import Literal, TypedDict
 
 
-RouteName = Literal["deterministic", "agent_loop", "supervisor"]
+RouteName = Literal["deterministic", "agent_loop", "supervisor", "orchestrator"]
 TaskType = Literal["modify", "review", "generate", "analyze", "translate"]
 
 
@@ -35,7 +35,7 @@ class VerificationResult(TypedDict):
 
 
 class ExecutionResult(TypedDict):
-    status: Literal["success", "partial", "failed"]
+    status: Literal["success", "partial", "failed", "awaiting_approval"]
     route: str
     display: str
     summary: str

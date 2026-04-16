@@ -10,24 +10,27 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from config.logger import logger
-from config.settings import Settings
+from mcp_tools.unity_coplay import get_coplay_stdio_invocation
+from scanner.unity_mcp import detect_coplay_package
 
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _MCPConnection:
-    def __init__(self, name, command, args, cwd=None):
+    def __init__(self, name, command, args, cwd=None, env=None):
         self.name = name
         self.command = command
         self.args = args
         self.cwd = cwd
+        self.env = env
         self.tool_names: list[str] = []
 
     async def _with_session(self, callback):
         params = StdioServerParameters(
             command=self.command,
             args=self.args,
+            env=self.env,
             cwd=self.cwd,
             encoding="utf-8",
             encoding_error_handler="replace",
@@ -66,12 +69,7 @@ class _MCPConnection:
 
 ENGINE_TOOL_MAP = {
     "unity": {
-        "engine_execute": "unity_execute",
-        "engine_scene": "unity_scene_hierarchy",
-        "engine_compile": "unity_compile",
-        "engine_run_tests": "unity_run_tests",
-        "engine_get_logs": "unity_get_logs",
-        "engine_screenshot": "unity_screenshot",
+        "engine_get_logs": "read_console",
     },
 }
 
@@ -82,6 +80,15 @@ class MCPClientManager:
         self._tool_registry: dict[str, str] = {}
         self.project_path: str = ""
         self._engine: str = ""
+        self._unity_status = {
+            "provider": "coplay",
+            "transport": "stdio",
+            "package_installed": False,
+            "package_name": "",
+            "connected": False,
+            "reason": "",
+            "tool_names": [],
+        }
 
     def init(self, project_path, engine="unity"):
         self.shutdown()
@@ -127,40 +134,61 @@ class MCPClientManager:
         if not git_connected:
             logger.warning("[git] 所有连接尝试均失败")
 
-        gamedev_conn = _MCPConnection(
-            "gamedev",
-            sys.executable,
-            ["-m", "mcp_tools.mcp_server_gamedev", project_path],
-            cwd=str(APP_ROOT),
-        )
-        try:
-            gamedev_conn.connect_sync()
-            self._connections["gamedev"] = gamedev_conn
-        except Exception as exc:
-            logger.error(f"[gamedev] 连接失败: {exc}")
-            raise
-
-        if Settings.is_unity_available():
-            try:
-                unity_conn = _MCPConnection(
-                    "unity",
-                    sys.executable,
-                    ["-m", "mcp_tools.mcp_server_unity", project_path],
-                    cwd=str(APP_ROOT),
-                )
-                unity_conn.connect_sync()
-                self._connections["unity"] = unity_conn
-                logger.info("Unity Server 已连接")
-            except Exception as exc:
-                logger.warning(f"Unity Server 连接失败: {exc}")
-        else:
-            logger.info("Unity 未配置，跳过 Unity Server")
+        if engine == "unity":
+            self._register_coplay_unity()
 
         self._tool_registry = {}
         for name, conn in self._connections.items():
             for tool_name in conn.tool_names:
                 self._tool_registry[tool_name] = name
         logger.info(f"工具注册: {len(self._tool_registry)} 个")
+
+    def _register_coplay_unity(self):
+        package_status = detect_coplay_package(self.project_path)
+        self._unity_status = {
+            "provider": "coplay",
+            "transport": "stdio",
+            "package_installed": package_status["package_installed"],
+            "package_name": package_status["package_name"],
+            "connected": False,
+            "reason": package_status["reason"],
+            "tool_names": [],
+        }
+
+        if not package_status["is_unity_project"]:
+            logger.info("[unity_coplay] 非 Unity 项目，跳过")
+            return
+
+        if not package_status["package_installed"]:
+            logger.warning(
+                f"[unity_coplay] 项目未安装 {package_status['package_name']}，Unity 编译/测试将降级为不可用"
+            )
+            return
+
+        command, args, env = get_coplay_stdio_invocation()
+        if not command:
+            self._unity_status["reason"] = "未找到 uv/uvx"
+            logger.warning("[unity_coplay] 未找到 uv/uvx，跳过 Unity MCP Server 注册")
+            return
+
+        try:
+            conn = _MCPConnection(
+                "unity_coplay",
+                command,
+                args,
+                cwd=self.project_path,
+                env=env,
+            )
+            conn.connect_sync()
+            self._connections["unity_coplay"] = conn
+            self._unity_status["connected"] = True
+            self._unity_status["reason"] = ""
+            self._unity_status["tool_names"] = list(conn.tool_names)
+            logger.info(f"[unity_coplay] 已注册 {len(conn.tool_names)} 个工具")
+        except Exception as exc:
+            self._unity_status["reason"] = str(exc)
+            logger.warning(f"[unity_coplay] 连接失败: {exc}")
+            logger.warning("Unity 编译/测试将降级为不可用")
 
     def call_tool(self, tool_name, arguments) -> str:
         arguments = dict(arguments or {})
@@ -204,6 +232,9 @@ class MCPClientManager:
     def get_all_tools(self) -> list[str]:
         return sorted(self._tool_registry.keys())
 
+    def get_unity_status(self) -> dict:
+        return dict(self._unity_status)
+
     def shutdown(self):
         for conn in list(self._connections.values()):
             conn.disconnect_sync()
@@ -211,6 +242,15 @@ class MCPClientManager:
         self._tool_registry.clear()
         self.project_path = ""
         self._engine = ""
+        self._unity_status = {
+            "provider": "coplay",
+            "transport": "stdio",
+            "package_installed": False,
+            "package_name": "",
+            "connected": False,
+            "reason": "",
+            "tool_names": [],
+        }
 
 
 _manager = MCPClientManager()
@@ -238,6 +278,10 @@ def get_all_mcp_tools():
 
 def get_project_path():
     return _manager.project_path
+
+
+def get_unity_status():
+    return _manager.get_unity_status()
 
 
 def shutdown_mcp():

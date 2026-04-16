@@ -2,6 +2,8 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+
 from config.logger import logger
 from config.settings import Settings
 
@@ -35,7 +37,7 @@ FIELD_ALIAS_MAP = {
 }
 
 
-def _parse_skill_file(path: Path) -> dict:
+def _parse_legacy_skill_file(path: Path) -> dict:
     content = path.read_text(encoding="utf-8")
     lines = content.splitlines()
     title = lines[0].lstrip("# ").strip() if lines else path.stem
@@ -53,14 +55,58 @@ def _parse_skill_file(path: Path) -> dict:
         "name": title,
         "trigger_text": trigger_text,
         "not_for": not_for,
+        "route": "agent_loop",
+        "route_agent_hint": "",
+        "description": trigger_text or title,
         "content": content,
         "path": str(path.as_posix()),
     }
 
 
+def _resolve_skill_body_path(meta_path: Path, meta: dict) -> Path:
+    body_name = meta.get("body", f"{meta.get('skill_id', meta_path.stem)}.md")
+    body_path = Path(body_name)
+    if not body_path.is_absolute():
+        body_path = meta_path.with_name(body_name)
+    return body_path
+
+
+def _parse_skill_yaml(path: Path) -> dict:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"Skill YAML 结构非法: {path}")
+
+    skill_id = raw.get("skill_id", path.stem)
+    body_path = _resolve_skill_body_path(path, raw)
+    if body_path.exists():
+        content = body_path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        default_title = lines[0].lstrip("# ").strip() if lines else skill_id
+    else:
+        content = ""
+        default_title = skill_id
+
+    return {
+        "skill_id": skill_id,
+        "name": raw.get("name", default_title),
+        "trigger_text": raw.get("trigger_text", ""),
+        "not_for": raw.get("not_for", ""),
+        "route": raw.get("route", "agent_loop"),
+        "route_agent_hint": raw.get("route_agent_hint", ""),
+        "description": raw.get("description", raw.get("trigger_text", default_title)),
+        "content": content,
+        "path": str(path.as_posix()),
+        "body_path": str(body_path.as_posix()) if body_path.exists() else "",
+    }
+
+
 def load_skill(skill_name: str) -> dict | None:
+    for path in SKILLS_DIR.rglob(f"{skill_name}.yaml"):
+        return _parse_skill_yaml(path)
+    for path in SKILLS_DIR.rglob(f"{skill_name}.yml"):
+        return _parse_skill_yaml(path)
     for path in SKILLS_DIR.rglob(f"{skill_name}.md"):
-        return _parse_skill_file(path)
+        return _parse_legacy_skill_file(path)
     return None
 
 
@@ -68,7 +114,21 @@ def load_all_skills() -> list[dict]:
     if not SKILLS_DIR.exists():
         return []
 
-    skills = [_parse_skill_file(path) for path in sorted(SKILLS_DIR.rglob("*.md"))]
+    skills_by_id: dict[str, dict] = {}
+    for path in sorted(SKILLS_DIR.rglob("*.yaml")):
+        skill = _parse_skill_yaml(path)
+        skills_by_id[skill["skill_id"]] = skill
+    for path in sorted(SKILLS_DIR.rglob("*.yml")):
+        skill = _parse_skill_yaml(path)
+        skills_by_id[skill["skill_id"]] = skill
+    for path in sorted(SKILLS_DIR.rglob("*.md")):
+        skill_id = path.stem
+        if skill_id in skills_by_id:
+            continue
+        skill = _parse_legacy_skill_file(path)
+        skills_by_id[skill["skill_id"]] = skill
+
+    skills = list(skills_by_id.values())
     logger.debug(f"加载 {len(skills)} 个 Skill")
     return skills
 
@@ -299,7 +359,11 @@ def list_skills(genre: str = "common") -> list[str]:
     skill_dir = SKILLS_DIR / genre
     if not skill_dir.exists():
         return []
-    return sorted(path.stem for path in skill_dir.glob("*.md"))
+
+    names = {path.stem for path in skill_dir.glob("*.yaml")}
+    names.update(path.stem for path in skill_dir.glob("*.yml"))
+    names.update(path.stem for path in skill_dir.glob("*.md"))
+    return sorted(names)
 
 
 def get_recommended_skills(project_context: dict) -> list[dict]:

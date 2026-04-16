@@ -1,0 +1,6 @@
+skill_id: analyze_deps
+name: 依赖分析
+description: 分析脚本、资源、GUID 引用关系，适合排查依赖与孤儿资源问题。
+trigger_text: 依赖、引用、orphan、guid
+not_for: 直接修改代码或配置
+route: agent_loop

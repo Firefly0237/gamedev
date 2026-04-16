@@ -1,240 +1,41 @@
 import json
 import time
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 
-from agents.llm import create_llm
+from agents.llm import create_llm, get_llm_runtime_info
 from config.logger import logger
 from config.settings import Settings
 from context.loader import build_system_prompt, extract_focus_class
 from database.db import db
+from graphs.llm_utils import content_to_text, extract_total_tokens, merge_response_chunks
 from graphs.safety import execute_tool_safely
-from mcp_tools.mcp_client import ENGINE_TOOL_MAP, get_all_mcp_tools, get_project_path
+from graphs.tool_defs import build_tool_definitions
+from mcp_tools.mcp_client import get_project_path
 from schemas.contracts import empty_result
 
+_build_tool_definitions = build_tool_definitions
 
-READ_ONLY_TOOLS = {
-    "read_file",
-    "list_directory",
-    "search_files",
-    "scan_asset_sizes",
-    "scan_texture_info",
-    "read_project_settings",
-    "parse_meta_file",
-    "find_references",
-    "validate_all_configs",
-    "engine_compile",
-    "engine_run_tests",
-    "engine_get_logs",
-}
-
-WRITE_ENABLED_SKILLS = {
-    "generate_test",
-    "generate_system",
-    "generate_shader",
-    "generate_ui",
-    "generate_editor_tool",
-    "translate",
+SKILL_TO_TASK_TYPE = {
+    "review_code": "review",
+    "analyze_deps": "review",
+    "analyze_perf": "review",
+    "validate_build": "review",
+    "validate_config": "review",
+    "translate": "translate",
+    "generate_test": "generation",
+    "generate_shader": "generation",
+    "generate_ui": "generation",
+    "generate_editor_tool": "generation",
+    "generate_system": "generation",
+    "modify_config": "intent_parse",
+    "modify_code": "intent_parse",
+    "summarize_requirement": "requirement",
 }
 
 
-def _extract_total_tokens(response) -> int:
-    usage = response.response_metadata.get("token_usage", {}) if getattr(response, "response_metadata", None) else {}
-    if "total_tokens" in usage:
-        return usage["total_tokens"] or 0
-    usage2 = getattr(response, "usage_metadata", None) or {}
-    return usage2.get("total_tokens", 0) or 0
-
-
-def _content_to_text(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict) and "text" in item:
-                parts.append(str(item["text"]))
-        return "\n".join(parts)
-    return str(content or "")
-
-
-def _build_tool_definitions(skill_id: str) -> list[dict]:
-    tool_defs = [
-        {
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "读取项目文件内容",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string", "description": "文件路径"}},
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "write_file",
-                "description": "写入文件（自动备份和验证）",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-                    "required": ["path", "content"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_directory",
-                "description": "列出目录内容",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string", "description": "目录路径"}},
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_files",
-                "description": "搜索包含关键字的文件",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}, "pattern": {"type": "string"}},
-                    "required": ["path", "pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "scan_asset_sizes",
-                "description": "统计资源文件大小",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"relative_path": {"type": "string", "default": "Assets"}},
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "scan_texture_info",
-                "description": "扫描纹理文件信息",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"relative_path": {"type": "string", "default": "Assets"}},
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_project_settings",
-                "description": "读取 ProjectSettings 配置文件",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"settings_file": {"type": "string"}},
-                    "required": ["settings_file"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "parse_meta_file",
-                "description": "解析 .meta 获取 GUID",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"relative_path": {"type": "string"}},
-                    "required": ["relative_path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "find_references",
-                "description": "搜索 GUID 引用",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"guid": {"type": "string"}},
-                    "required": ["guid"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "validate_all_configs",
-                "description": "校验项目所有配置文件，返回问题列表",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "engine_compile",
-                "description": "调用引擎编译当前项目，返回错误和警告列表。需要 Unity Server 连接。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "engine_run_tests",
-                "description": "运行项目的单元测试，返回 passed/failed 统计和失败详情",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "test_filter": {"type": "string", "description": "可选的测试名过滤器"}
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "engine_get_logs",
-                "description": "读取最近的引擎日志（用于查看编译/运行历史输出）",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "lines": {"type": "integer", "default": 100}
-                    },
-                },
-            },
-        },
-    ]
-
-    registered = set(get_all_mcp_tools())
-    allowed_tools = set(READ_ONLY_TOOLS)
-    if skill_id in WRITE_ENABLED_SKILLS:
-        allowed_tools.add("write_file")
-
-    engine_map = ENGINE_TOOL_MAP.get("unity", {})
-    available = []
-    for tool in tool_defs:
-        name = tool["function"]["name"]
-        if name not in allowed_tools:
-            continue
-        if name in registered:
-            available.append(tool)
-            continue
-        if name in engine_map and engine_map[name] in registered:
-            available.append(tool)
-    return available
+def resolve_skill_task_type(skill_id: str) -> str:
+    return SKILL_TO_TASK_TYPE.get(skill_id, "review")
 
 
 def run_agent_loop(
@@ -248,8 +49,7 @@ def run_agent_loop(
     extra_user_prompt: str = None,
     temperature: float = None,
     plan_first: bool = True,
-    verify_mode: str = None,
-    verify_skill_id: str = None,
+    stream_callback: callable = None,
 ) -> dict:
     """核心 Agent Loop"""
     t0 = time.time()
@@ -300,21 +100,22 @@ def run_agent_loop(
         {"engine_compile", "engine_run_tests", "engine_get_logs"} & tool_names
     ):
         duration = time.time() - t0
-        db.log_task_end(task_id, "failed", 0, duration, "Unity 未配置或 Unity Server 未连接")
+        db.log_task_end(task_id, "failed", 0, duration, "Unity MCP 不可用")
         result = empty_result(route="agent_loop", task_id=task_id)
         result["status"] = "failed"
         result["summary"] = "Unity 编译/测试不可用"
         result["display"] = (
-            "❌ Unity 未配置或 Unity Server 未连接，当前无法执行真实编译/测试。\n\n"
-            "请在 .env 中设置 UNITY_EXECUTABLE_PATH，并重启 GameDev。"
+            "❌ Unity MCP 不可用，当前无法执行真实编译/测试。\n\n"
+            "请安装 Coplay Unity MCP 包，并确保 Unity Editor 已连接。"
         )
-        result["error"] = "Unity 未配置或 Unity Server 未连接"
+        result["error"] = "Unity MCP 不可用"
         result["duration"] = duration
         return result
 
-    task_type = "review" if skill_id in ("review_code", "analyze_perf") else "generation"
+    task_type = resolve_skill_task_type(skill_id)
     effective_temp = temperature if temperature is not None else None
     llm = create_llm(task_type=task_type, temperature=effective_temp)
+    llm_info = get_llm_runtime_info(llm)
     if tool_defs:
         llm = llm.bind_tools(tool_defs)
 
@@ -324,15 +125,41 @@ def run_agent_loop(
     effective_max_steps = max_steps if max_steps is not None else Settings.MAX_AGENT_STEPS
     for step in range(effective_max_steps):
         try:
-            response = llm.invoke(messages)
+            if stream_callback:
+                chunks: list[AIMessageChunk] = []
+                for chunk in llm.stream(messages):
+                    chunks.append(chunk)
+                    text = content_to_text(chunk.content)
+                    if text:
+                        stream_callback(text)
+                response = merge_response_chunks(chunks)
+            else:
+                response = llm.invoke(messages)
         except Exception as exc:
             logger.error(f"LLM 调用失败 (step {step}): {exc}")
             time.sleep(2)
             try:
-                response = llm.invoke(messages)
+                if stream_callback:
+                    chunks = []
+                    for chunk in llm.stream(messages):
+                        chunks.append(chunk)
+                        text = content_to_text(chunk.content)
+                        if text:
+                            stream_callback(text)
+                    response = merge_response_chunks(chunks)
+                else:
+                    response = llm.invoke(messages)
             except Exception as exc2:
                 duration = time.time() - t0
-                db.log_task_end(task_id, "failed", total_tokens, duration, str(exc2))
+                db.log_task_end(
+                    task_id,
+                    "failed",
+                    total_tokens,
+                    duration,
+                    str(exc2),
+                    provider=llm_info.provider if llm_info else "",
+                    model=llm_info.model if llm_info else "",
+                )
                 result = empty_result(route="agent_loop", task_id=task_id)
                 result["status"] = "failed"
                 result["error"] = f"LLM 调用失败: {exc2}"
@@ -342,7 +169,7 @@ def run_agent_loop(
                 return result
 
         messages.append(response)
-        total_tokens += _extract_total_tokens(response)
+        total_tokens += extract_total_tokens(response)
 
         if not response.tool_calls:
             break
@@ -361,13 +188,13 @@ def run_agent_loop(
     final_content = ""
     for msg in reversed(messages):
         if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-            final_content = _content_to_text(msg.content)
+            final_content = content_to_text(msg.content)
             break
 
     if not final_content:
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content:
-                final_content = _content_to_text(msg.content)
+                final_content = content_to_text(msg.content)
                 break
 
     duration = time.time() - t0
@@ -395,92 +222,28 @@ def run_agent_loop(
     result["steps"] = steps_count
     result["tokens"] = total_tokens
     result["duration"] = duration
-
-    if output_files and status == "success":
-        from graphs.verify import verify_files
-
-        effective_verify_mode = verify_mode or Settings.DEFAULT_VERIFY_MODE
-        effective_verify_skill = verify_skill_id or skill_id
-
-        if effective_verify_mode != "off":
-            logger.info(f"Agent Loop verify 启动: mode={effective_verify_mode}, skill={effective_verify_skill}")
-            verify_result = verify_files(
-                files=output_files,
-                project_context=project_context,
-                mode=effective_verify_mode,
-                skill_id=effective_verify_skill,
-            )
-            result["verification"] = verify_result
-
-            if not verify_result["passed"]:
-                logger.info("Agent Loop verify 未通过，尝试修复一次")
-                error_summary = "\n".join(
-                    f"- {detail['message']}"
-                    for detail in verify_result["details"]
-                    if not detail["passed"]
-                )
-                fix_prompt = f"上次生成的文件验证失败，错误如下:\n{error_summary}\n\n请修复这些错误后重新生成。"
-
-                fix_result = run_agent_loop(
-                    user_input=user_input,
-                    skill=skill,
-                    schema=schema,
-                    project_context=project_context,
-                    chat_history=chat_history,
-                    tool_filter=tool_filter,
-                    max_steps=max_steps,
-                    extra_user_prompt=fix_prompt,
-                    temperature=temperature,
-                    plan_first=plan_first,
-                    verify_mode="off",
-                    verify_skill_id=effective_verify_skill,
-                )
-
-                result["tokens"] += fix_result.get("tokens", 0)
-                result["duration"] += fix_result.get("duration", 0)
-
-                if fix_result["status"] == "success" and fix_result.get("output_files"):
-                    new_files = fix_result["output_files"]
-                    result["output_files"] = list(dict.fromkeys(result["output_files"] + new_files))
-
-                    re_verify = verify_files(
-                        files=result["output_files"],
-                        project_context=project_context,
-                        mode=effective_verify_mode,
-                        skill_id=effective_verify_skill,
-                    )
-                    result["verification"] = re_verify
-
-                    if re_verify["passed"]:
-                        result["display"] += "\n\n### 🔧 自动修复成功"
-                        logger.info("Agent Loop 修复成功")
-                    else:
-                        result["status"] = "partial"
-                        result["display"] += "\n\n### ⚠️ 自动修复未完全通过"
-                        fail_msgs = "\n".join(
-                            f"  - {detail['message']}"
-                            for detail in re_verify["details"]
-                            if not detail["passed"]
-                        )
-                        if fail_msgs:
-                            result["display"] += f"\n{fail_msgs}"
-                        result["error"] = "自动修复后验证仍未通过"
-                else:
-                    result["status"] = "partial"
-                    result["display"] += "\n\n### ⚠️ 自动修复失败"
-                    fail_msgs = "\n".join(
-                        f"  - {detail['message']}"
-                        for detail in verify_result["details"]
-                        if not detail["passed"]
-                    )
-                    if fail_msgs:
-                        result["display"] += f"\n{fail_msgs}"
-                    result["error"] = "自动修复失败"
+    result["model_usage"] = [
+        {
+            "role": "agent_loop",
+            "task_type": task_type,
+            "provider": llm_info.provider if llm_info else "",
+            "model": llm_info.model if llm_info else "",
+            "tokens": total_tokens,
+        }
+    ]
 
     if status == "failed":
         result["error"] = "未生成最终输出"
         if not result["display"]:
             result["display"] = "❌ 未生成最终输出"
 
-    db.log_task_end(task_id, result["status"], result["tokens"], result["duration"], result["error"])
+    db.log_task_end(
+        task_id,
+        result["status"],
+        result["tokens"],
+        result["duration"],
+        result["error"],
+        provider=llm_info.provider if llm_info else "",
+        model=llm_info.model if llm_info else "",
+    )
     return result

@@ -1,0 +1,6 @@
+skill_id: generate_ui
+name: 生成 UI
+description: 生成 Unity UI 面板、HUD、菜单与相关脚本。
+trigger_text: ui、面板、界面、hud、菜单
+not_for: 纯配置改值
+route: agent_loop

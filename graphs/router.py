@@ -1,4 +1,5 @@
 from config.logger import logger
+from config.settings import Settings
 from context.loader import load_skill, match_schema, match_skill
 from schemas.contracts import default_safety_policy, infer_task_type, infer_validator
 
@@ -19,7 +20,7 @@ def should_fallback_to_config_modify(user_input: str, skill, schema: dict | None
 
 
 def classify_intent(user_input: str, project_context: dict = None) -> dict:
-    """三分叉分类：deterministic / agent_loop / supervisor"""
+    """三分叉分类：deterministic / agent_loop / orchestrator"""
 
     detected_genre = (project_context or {}).get("detected_genre", "unknown")
 
@@ -29,11 +30,9 @@ def classify_intent(user_input: str, project_context: dict = None) -> dict:
         skill = load_skill("modify_config")
     skill_id = skill["skill_id"] if skill else ""
 
-    route = "agent_loop"
-    if skill_id in ("modify_config", "modify_code"):
-        route = "deterministic"
-    elif skill_id in ("generate_system", "summarize_requirement"):
-        route = "supervisor"
+    route = (skill or {}).get("route", "agent_loop")
+    if route == "orchestrator" and not Settings.ENABLE_ORCHESTRATOR:
+        route = "agent_loop"
 
     task_type = infer_task_type(skill_id)
     is_batch = is_batch_modify(user_input, skill_id)
