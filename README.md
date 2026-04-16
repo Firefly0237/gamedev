@@ -2,7 +2,7 @@
 
 An open-source, Unity-first agent workbench for game development.
 
-GameDev combines task routing, structured file operations, multi-worker orchestration, MCP-based engine access, and skill-driven workflows to help developers review code, modify configs, generate gameplay systems, and verify changes against a real Unity project.
+GameDev is built around a simple idea: game development tasks benefit from different execution styles. Some tasks need structured and deterministic edits, some need short tool-using loops, and some need planning, approval, and multi-step orchestration. This project turns that idea into a practical workflow for Unity projects.
 
 English | [中文](#中文说明)
 
@@ -12,44 +12,80 @@ English | [中文](#中文说明)
 
 ### Overview
 
-GameDev is designed for **game development workflows**, not generic coding tasks.
+GameDev helps developers work with Unity projects through a combination of:
 
-It focuses on scenarios such as:
+- task routing
+- structured file operations
+- multi-worker orchestration
+- MCP-based Unity access
+- skill-driven workflows
 
-- changing gameplay or balance configs safely
+Typical use cases include:
+
+- updating gameplay and balance configs
 - reviewing Unity C# code with project context
-- generating tests, UI code, shaders, or editor tooling
-- planning and executing multi-file system changes
-- connecting to Unity through MCP for compile, test, and console feedback
+- generating tests, shaders, UI code, and editor tools
+- planning and executing multi-file gameplay systems
+- verifying changes with compile, test, and console feedback
 
-The project is currently **Unity-first**, with architecture that leaves room for future workers such as art, config, and GUI agents.
+### Design Principles
 
-### Core Features
+GameDev is organized around five core design principles.
+
+#### 1. Route tasks by execution style
+
+Different kinds of work call for different execution paths.
+
+- `deterministic`
+  for structured config/code modifications
+- `agent_loop`
+  for review, generation, translation, and validation tasks
+- `orchestrator`
+  for larger, multi-file tasks that benefit from planning and approval
+
+#### 2. Keep critical edits structured
+
+Config and code modification flows use structured parsing, validation, and controlled writes. This keeps important project changes observable and consistent.
+
+#### 3. Separate planning, execution, and verification
+
+Larger tasks are easier to trust when the system makes its plan visible, executes step by step, and verifies outputs at the end.
+
+#### 4. Treat Unity as a first-class backend
+
+GameDev integrates with Unity through Coplay Unity MCP for compile, test, and console workflows, while keeping local scanning and static analysis tools fast and deterministic.
+
+#### 5. Use skills as the extension surface
+
+Project workflows are defined through skill metadata and instruction files, making it straightforward for contributors to add new domain-specific capabilities.
+
+### Main Features
 
 - **Three execution routes**
-  - `deterministic`: structured config/code modification
-  - `agent_loop`: short-chain review, generation, translation, and validation tasks
-  - `orchestrator`: plan-gated, multi-worker execution for larger tasks
+  - `deterministic`
+  - `agent_loop`
+  - `orchestrator`
 - **Skill-driven workflows**
-  - task behavior is defined by skill metadata and instruction files under `context/skills/common`
+  - skills live in `context/skills/common`
+- **Plan-gated orchestration**
+  - larger tasks can be reviewed before execution
 - **Unity MCP integration**
-  - uses Coplay Unity MCP for compile, test, and console access
-- **Model tiering with fallback**
-  - routes different task types to different providers/models
-  - fallback chain: `anthropic -> openai -> deepseek`
-- **Local static analysis tools**
-  - reference search, `.meta` parsing, asset stats, project settings, and config validation stay local and deterministic
-- **Streamlit workbench UI**
-  - includes plan approval, progressive disclosure, task cards, and task history recovery
+  - compile, test, and console access through Coplay Unity MCP
+- **Model tiering**
+  - task-type based routing with provider fallback
+- **Local scanner tools**
+  - reference search, `.meta` parsing, asset stats, project settings, and config validation
+- **Workbench UI**
+  - Streamlit-based interface with task cards, history, and progressive disclosure
 
-### How It Works
+### Architecture
 
 ```text
 User Request
   -> Router
      -> Deterministic
         -> intent parsing
-        -> validated structured edit
+        -> structured validated edit
      -> Agent Loop
         -> tool use
         -> short execution loop
@@ -100,13 +136,13 @@ python -m venv venv
 
 Activate it:
 
-- Windows PowerShell:
+- Windows PowerShell
 
 ```powershell
 venv\Scripts\Activate.ps1
 ```
 
-- macOS / Linux:
+- macOS / Linux
 
 ```bash
 source venv/bin/activate
@@ -121,9 +157,7 @@ pip install mcp-server-git
 pip install uv
 ```
 
-#### 4. Create a `.env`
-
-Create a local `.env` file manually.
+#### 4. Create a local `.env`
 
 Minimum setup:
 
@@ -142,9 +176,9 @@ ENABLE_ORCHESTRATOR=1
 DEFAULT_VERIFY_MODE=syntax
 ```
 
-If only `DEEPSEEK_API_KEY` is configured, the project still runs, but generation and planning tasks will fall back to DeepSeek.
+A DeepSeek-only setup supports the full app. A multi-provider setup enables the full model-tiering path for planning and generation tasks.
 
-#### 5. Start the app
+#### 5. Run the app
 
 ```bash
 streamlit run app.py
@@ -152,27 +186,22 @@ streamlit run app.py
 
 ### Unity Setup
 
-To use real compile/test/log features, prepare your Unity project with Coplay Unity MCP:
+To enable compile, test, and console workflows:
 
-1. Install `com.coplaydev.unity-mcp` in your Unity project
-2. Open the Unity Editor for that project
-3. Let GameDev scan and initialize the project from the UI
-
-If Unity MCP is not available:
-
-- local scanning and non-engine tasks still work
-- engine-backed validation will degrade gracefully with structured unavailable errors
+1. install `com.coplaydev.unity-mcp` in your Unity project
+2. open the Unity Editor for that project
+3. scan and initialize the project from the GameDev UI
 
 ### Configuration Notes
 
-Important runtime switches:
+Key runtime switches:
 
 - `ENABLE_MODEL_TIERING=1`
   enables task-type based model routing
 - `ENABLE_ORCHESTRATOR=1`
   enables orchestrated execution for system-generation tasks
 - `DEFAULT_VERIFY_MODE=syntax|full`
-  controls default verification depth
+  controls verification depth
 
 ### Contributing
 
@@ -181,45 +210,45 @@ Contributions are welcome.
 Good contribution areas include:
 
 - new skills
-- better Unity/game-dev workflows
-- new worker integrations
+- Unity workflow improvements
 - scanner improvements
-- UI/UX improvements
-- documentation cleanup
+- new worker integrations
+- UI and usability improvements
+- documentation refinement
 
-Please keep pull requests focused and scoped. For larger changes, open an issue or discussion first.
+For larger ideas, opening an issue or discussion first is helpful.
 
 ### Contributing Skills
 
 Skill contributions are especially welcome.
 
-To add a new skill:
+To add a skill:
 
-1. Add a YAML metadata file under `context/skills/common/`
-2. Add the matching Markdown instruction file
-3. Define a clear `skill_id`, `description`, `route`, and trigger text
-4. Keep instructions procedural and operational, not essay-style
-5. In your PR description, include:
+1. add a YAML metadata file under `context/skills/common/`
+2. add the matching Markdown instruction file
+3. define a clear `skill_id`, `description`, `route`, and trigger text
+4. write instructions as procedural guidance
+5. include in your PR:
    - what the skill is for
    - one or two example prompts
    - whether it reads files, writes files, or requires Unity
 
-Suggested examples of useful community skills:
+Useful community skill ideas:
 
 - gameplay balancing
 - localization QA
 - prefab/config consistency checks
 - UI prefab generation workflows
 - build/release assistant skills
-- project audit and refactor skills
+- refactor and project-audit skills
 
 ### Project Status
 
-Current state:
+Current implementation highlights:
 
 - `code_agent` is implemented
-- `art_agent` and `config_agent` are placeholders for future expansion
-- GUI-oriented agents and deeper engine automation are planned, not complete
+- `art_agent` and `config_agent` define extension slots for future workers
+- model tiering, orchestrator routing, and Unity MCP integration are available in the current codebase
 
 ### License
 
@@ -231,44 +260,76 @@ MIT
 
 ### 项目简介
 
-GameDev 是一个面向 **Unity 游戏开发场景** 的开源 Agent 工作台，而不是通用代码助手。
+GameDev 是一个面向 Unity 游戏开发的开源 Agent 工作台。
 
-它主要解决这类问题：
+它的整体设计思路很直接：游戏开发任务适合不同的执行方式。有些任务适合结构化、确定性的修改，有些任务适合短链工具循环，有些任务适合先规划、再审批、再多步执行。GameDev 把这套思路落成了一套可运行的 Unity 工作流。
 
-- 安全地修改玩法或数值配置
+GameDev 主要服务这些场景：
+
+- 调整玩法和数值配置
 - 带项目上下文地审查 Unity C# 代码
-- 生成测试、UI 代码、Shader、编辑器工具
-- 对多文件功能改动做计划、执行和验证
-- 通过 MCP 连接 Unity，拿到编译、测试和控制台反馈
+- 生成测试、Shader、UI 代码、编辑器工具
+- 规划并执行多文件功能系统改动
+- 通过 Unity 编译、测试、控制台反馈验证改动结果
 
-当前项目以 **Unity-first** 为目标，但底层已经预留了未来扩展到 `art / config / GUI` 等 worker 的架构空间。
+### 设计原则
 
-### 核心能力
+GameDev 的总体设计围绕五条原则展开。
+
+#### 1. 按任务执行方式做路由
+
+不同类型的工作适合不同路径。
+
+- `deterministic`
+  负责结构化配置/代码修改
+- `agent_loop`
+  负责审查、生成、翻译、验证等短链任务
+- `orchestrator`
+  负责更大的多文件任务，支持规划和审批
+
+#### 2. 关键修改保持结构化
+
+配置和代码修改链路使用结构化解析、校验和受控写入，让关键项目改动保持可观察、可追踪。
+
+#### 3. 规划、执行、验证分层清晰
+
+更大的任务在“计划可见、分步执行、最终验证”的结构下更容易理解，也更容易协作。
+
+#### 4. Unity 作为一等后端能力
+
+GameDev 通过 Coplay Unity MCP 接入编译、测试和控制台工作流，同时把本地扫描和静态分析能力保留在本地，保持速度和确定性。
+
+#### 5. Skill 作为扩展入口
+
+项目工作流通过 Skill 元数据和指令文件定义，方便贡献者持续增加新的领域能力。
+
+### 主要功能
 
 - **三条执行路径**
-  - `deterministic`：配置/代码的结构化修改
-  - `agent_loop`：审查、短链生成、翻译、验证等任务
-  - `orchestrator`：带计划审批的多 worker 编排
+  - `deterministic`
+  - `agent_loop`
+  - `orchestrator`
 - **Skill 驱动工作流**
-  - 任务行为通过 `context/skills/common` 下的技能元数据和说明文件定义
+  - Skill 位于 `context/skills/common`
+- **带审批的编排执行**
+  - 较大的任务可以先看计划再执行
 - **Unity MCP 接入**
-  - 通过 Coplay Unity MCP 获取编译、测试和控制台日志
-- **模型分层与降级**
-  - 按任务类型路由到不同模型
-  - 降级链为 `anthropic -> openai -> deepseek`
-- **本地静态分析工具**
-  - 引用查询、`.meta` 解析、资源统计、ProjectSettings 读取、配置校验等能力保持本地确定性执行
-- **Streamlit 工作台**
-  - 包含计划审批、渐进式披露、任务卡片和历史任务恢复
+  - 通过 Coplay Unity MCP 获取编译、测试和控制台能力
+- **模型分层**
+  - 按任务类型做模型路由，并带 provider 降级链
+- **本地 scanner 工具**
+  - 引用查询、`.meta` 解析、资源统计、ProjectSettings 读取、配置校验
+- **工作台 UI**
+  - 基于 Streamlit，包含任务卡片、历史恢复和渐进式披露
 
-### 工作方式
+### 架构
 
 ```text
 用户请求
   -> Router
      -> Deterministic
         -> 意图解析
-        -> 结构化修改
+        -> 结构化校验修改
      -> Agent Loop
         -> 工具调用
         -> 短链执行
@@ -319,13 +380,13 @@ python -m venv venv
 
 激活方式：
 
-- Windows PowerShell：
+- Windows PowerShell
 
 ```powershell
 venv\Scripts\Activate.ps1
 ```
 
-- macOS / Linux：
+- macOS / Linux
 
 ```bash
 source venv/bin/activate
@@ -340,7 +401,7 @@ pip install mcp-server-git
 pip install uv
 ```
 
-#### 4. 手动创建 `.env`
+#### 4. 创建本地 `.env`
 
 最小配置：
 
@@ -359,7 +420,7 @@ ENABLE_ORCHESTRATOR=1
 DEFAULT_VERIFY_MODE=syntax
 ```
 
-如果只配置了 `DEEPSEEK_API_KEY`，项目仍然可以运行，但生成和规划任务会降级到 DeepSeek。
+仅使用 DeepSeek 也可以完整启动应用。多 provider 配置可以打开规划与生成任务的完整模型分层路径。
 
 #### 5. 启动应用
 
@@ -367,18 +428,13 @@ DEFAULT_VERIFY_MODE=syntax
 streamlit run app.py
 ```
 
-### Unity 接入说明
+### Unity 接入
 
-如果要使用真实编译、测试、控制台日志能力，需要先准备好带 Coplay Unity MCP 的 Unity 项目：
+如果要启用编译、测试和控制台工作流：
 
 1. 在 Unity 项目中安装 `com.coplaydev.unity-mcp`
 2. 打开该项目的 Unity Editor
 3. 在 GameDev UI 中扫描并初始化该项目
-
-如果 Unity MCP 不可用：
-
-- 本地扫描和不依赖引擎的任务仍可正常运行
-- 引擎相关验证会优雅降级，返回结构化不可用结果
 
 ### 配置说明
 
@@ -389,7 +445,7 @@ streamlit run app.py
 - `ENABLE_ORCHESTRATOR=1`
   启用系统生成类任务的 orchestrator 路径
 - `DEFAULT_VERIFY_MODE=syntax|full`
-  控制默认验证深度
+  控制验证深度
 
 ### 参与贡献
 
@@ -397,15 +453,14 @@ streamlit run app.py
 
 适合贡献的方向包括：
 
-- 新技能
-- 更好的 Unity / 游戏开发工作流
-- 新 worker 集成
+- 新 Skill
+- Unity 工作流增强
 - scanner 能力增强
-- UI/UX 改进
-- 文档完善
+- 新 worker 集成
+- UI 与可用性改进
+- 文档优化
 
-请尽量保持 PR 聚焦、范围清晰。  
-如果是较大的改动，建议先提 issue 或 discussion。
+如果是较大的想法，先开 issue 或 discussion 会更顺畅。
 
 ### 如何贡献 Skill
 
@@ -416,9 +471,9 @@ streamlit run app.py
 1. 在 `context/skills/common/` 下新增 YAML 元数据文件
 2. 新增对应的 Markdown 指令文件
 3. 明确写好 `skill_id`、`description`、`route` 和触发文本
-4. 指令尽量写成操作手册，而不是说明文档
-5. 在 PR 描述里补充：
-   - 这个 skill 解决什么问题
+4. 指令尽量写成过程化的操作手册
+5. 在 PR 描述里说明：
+   - 这个 skill 的用途
    - 1 到 2 个示例 prompt
    - 它是否读文件、写文件、是否依赖 Unity
 
@@ -429,15 +484,15 @@ streamlit run app.py
 - Prefab / 配置一致性检查
 - UI 生成工作流
 - 构建与发布辅助
-- 项目审计与重构辅助
+- 重构与项目审计类 Skill
 
 ### 当前状态
 
-当前版本：
+当前实现要点：
 
 - `code_agent` 已实装
-- `art_agent` 和 `config_agent` 仍是后续扩展位
-- GUI 类 agent 和更深的引擎自动化还在后续计划中
+- `art_agent` 和 `config_agent` 提供后续 worker 扩展位
+- 模型分层、orchestrator 路由和 Unity MCP 接入已经进入当前代码库
 
 ### License
 
