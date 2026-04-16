@@ -1,0 +1,6 @@
+skill_id: modify_config
+name: 修改配置
+description: 对 JSON 等配置文件做确定性或批量数值修改。
+trigger_text: 改、修改、调整、设置为、改成
+not_for: 新系统生成
+route: deterministic

@@ -1,0 +1,6 @@
+skill_id: analyze_perf
+name: 性能分析
+description: 分析 Unity 脚本中的性能热点与高频调用风险。
+trigger_text: 性能、优化、审计、performance
+not_for: 直接生成新系统
+route: agent_loop

@@ -1,0 +1,6 @@
+skill_id: modify_code
+name: 修改代码
+description: 对现有代码进行确定性修改，适合单文件或明确替换任务。
+trigger_text: 改代码、修改方法、重构、改变量
+not_for: 多文件系统生成
+route: deterministic

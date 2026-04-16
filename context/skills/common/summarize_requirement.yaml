@@ -1,0 +1,7 @@
+skill_id: summarize_requirement
+name: 需求拆解
+description: 将复杂、多文件需求拆解成可执行计划，适合进入 orchestrator 的规划阶段。
+trigger_text: 需求、拆解、规划、计划
+not_for: 单文件直接修改
+route: orchestrator
+route_agent_hint: code_agent

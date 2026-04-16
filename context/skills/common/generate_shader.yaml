@@ -1,0 +1,6 @@
+skill_id: generate_shader
+name: 生成 Shader
+description: 生成 Unity Shader 或渲染相关代码与资源骨架。
+trigger_text: shader、着色器、视觉效果、材质
+not_for: 普通配置改值
+route: agent_loop

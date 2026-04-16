@@ -1,0 +1,6 @@
+skill_id: generate_test
+name: 生成测试
+description: 为现有 Unity C# 脚本生成或补充测试代码。
+trigger_text: 生成测试、写测试、补测试、单元测试代码
+not_for: 生成完整新系统
+route: agent_loop

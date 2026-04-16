@@ -1,0 +1,6 @@
+skill_id: validate_build
+name: 编译与测试验证
+description: 调用 Unity 编译、测试和日志工具验证项目状态。
+trigger_text: 编译、构建、compile、运行测试、跑测试、unity 日志
+not_for: 生成新文件
+route: agent_loop
